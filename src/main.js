@@ -3,6 +3,7 @@ import { createViewer, Tool, Param, HIGHLIGHT_COLORS, CancelledError } from "./v
 import { renderThumbs } from "./thumbs.js";
 import { askForSignature } from "./signature.js";
 import { printPdf } from "./print.js";
+import { createRedactor } from "./redact.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -90,6 +91,7 @@ async function stashActive() {
 }
 
 async function activateNow(tab, { keepView = false } = {}) {
+  redactor.stop(); // marks belong to the document being replaced
   if (active && active !== tab) await stashActive();
   active = tab;
   renderTabs();
@@ -215,6 +217,7 @@ async function combineWith(fileList) {
 
 // ---------- tools, search, zoom, paging ----------
 function setTool(mode) {
+  redactor.stop();
   viewer.setTool(mode);
   markTool(mode);
 }
@@ -296,6 +299,36 @@ const recognizeText = () => serial(async () => {
     + (result.skipped ? ` ${plural(result.skipped)} already had text.` : ""));
 });
 
+// ---------- redaction ----------
+const redactBar = $("#redact-bar");
+const redactor = createRedactor(viewer, $("#viewer"), () => {
+  const n = redactor.marks.length;
+  $("#redact").setAttribute("aria-pressed", String(redactor.active));
+  redactBar.hidden = !redactor.active;
+  $("#redact-hint").textContent = n
+    ? `${n} area${n === 1 ? "" : "s"} marked · click one to unmark`
+    : "Drag over anything you want removed";
+  $("#redact-apply").disabled = !n;
+});
+
+function startRedacting() {
+  if (!active) return;
+  setTool(Tool.SELECT);
+  redactor.start();
+}
+
+const applyRedaction = () => serial(async () => {
+  const marks = redactor.marks;
+  if (!active || !marks.length) return;
+  const tab = active;
+  toast("Removing marked content…");
+  const { redactPdf } = await import("./redact-pdf.js"); // MuPDF is large; load only when used
+  tab.bytes = redactPdf(await viewer.currentBytes(tab.bytes), marks);
+  tab.dirty = true;
+  await activateNow(tab, { keepView: true });
+  toast(`Permanently removed ${marks.length} area${marks.length === 1 ? "" : "s"}. Save to keep the result.`);
+});
+
 const printActive = () => serial(async () => {
   if (!active) return;
   toast("Preparing to print…");
@@ -330,6 +363,9 @@ $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#sign").onclick = signDocument;
+$("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
+$("#redact-apply").onclick = applyRedaction;
+$("#redact-cancel").onclick = () => redactor.stop();
 const imageInput = $("#image-input");
 $("#add-image").onclick = () => active && imageInput.click();
 imageInput.onchange = () => {

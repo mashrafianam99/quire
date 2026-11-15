@@ -184,5 +184,7 @@ export function createViewer(container, { askPassword }) {
     fitWidth: () => { viewer.currentScaleValue = "page-width"; },
     goToPage: (n) => { viewer.currentPageNumber = n; },
     get pageCount() { return viewer.pagesCount; },
+    /** pdf.js's view of page `n` (1-based): its `div` and current `viewport`. */
+    pageView: (n) => viewer.getPageView(n - 1),
   };
 }

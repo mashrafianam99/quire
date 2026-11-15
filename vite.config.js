@@ -19,4 +19,6 @@ cpSync("node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz",
 export default defineConfig({
   base: "./", // relative paths so the same build works inside the Tauri shell later
   build: { target: "esnext" },
+  // mupdf finds its .wasm via import.meta.url, which pre-bundling would break
+  optimizeDeps: { exclude: ["mupdf"] },
 });

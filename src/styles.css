@@ -216,3 +216,19 @@ button, input { font: inherit; color: inherit; }
   #print-root { display: block; }
   #print-root img { display: block; width: 100%; break-after: page; }
 }
+
+/* ---------- redaction ---------- */
+.redact-bar[hidden] { display: none; }
+.redact-bar { gap: 8px; }
+#redact-hint { color: var(--muted); font-size: 12px; }
+.btn.danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.btn.danger:disabled { opacity: 0.5; }
+.viewer.redacting .page { cursor: crosshair; }
+.viewer.redacting .textLayer,
+.viewer.redacting .annotationLayer,
+.viewer.redacting .annotationEditorLayer { pointer-events: none; }
+.redact-mark {
+  position: absolute; z-index: 10; padding: 0; border: 0;
+  background: rgb(0 0 0 / 0.45); outline: 2px solid #dc2626; cursor: pointer;
+}
+.redact-mark.drawing { pointer-events: none; }

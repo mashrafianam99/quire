@@ -30,6 +30,12 @@
       <button class="btn" data-tool="TEXT" aria-pressed="false" title="Add text">Text</button>
       <button class="btn" id="add-image" title="Add a picture to this page">Image</button>
       <button class="btn" id="sign" title="Add your signature">Sign</button>
+      <button class="btn" id="redact" aria-pressed="false" title="Permanently remove text and images">Redact</button>
+    </div>
+    <div class="group redact-bar" id="redact-bar" aria-label="Redaction" hidden>
+      <span id="redact-hint" aria-live="polite"></span>
+      <button class="btn danger" id="redact-apply">Apply redaction</button>
+      <button class="btn" id="redact-cancel">Cancel</button>
     </div>
     <div class="group style-bar" id="style-bar" aria-label="Style" hidden>
       <div class="swatches" role="radiogroup" aria-label="Color"></div>
