@@ -1,0 +1,291 @@
+import "./styles.css";
+import { createViewer, Tool, CancelledError } from "./viewer.js";
+import { renderThumbs } from "./thumbs.js";
+import {
+  applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
+} from "./pageops.js";
+
+const $ = (sel) => document.querySelector(sel);
+const app = $("#app");
+const tabStrip = $("#tabs");
+const thumbList = $("#thumbs");
+const searchInput = $("#search");
+const searchCount = $("#search-count");
+const pageInput = $("#page-num");
+const pageTotal = $("#page-total");
+const zoomLabel = $("#zoom-label");
+
+/** @type {{id:number, name:string, bytes:Uint8Array, dirty:boolean}[]} */
+const tabs = [];
+let active = null; // the tab whose document the viewer shows
+let nextId = 1;
+let thumbs = null;
+
+const viewer = createViewer($("#viewer"), { askPassword });
+
+// ---------- feedback ----------
+let toastTimer;
+function toast(message) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+function askPassword(wasWrong) {
+  const dialog = $("#password-dialog");
+  const input = dialog.querySelector("input");
+  dialog.querySelector(".dialog-error").hidden = !wasWrong;
+  input.value = "";
+  dialog.returnValue = ""; // Escape keeps the previous value otherwise
+  dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      resolve(dialog.returnValue === "ok" ? input.value : null);
+    }, { once: true });
+  });
+}
+
+// ---------- one-at-a-time queue ----------
+// Every action that reads or replaces the viewer's document (tab switches, page edits,
+// save, close) runs here in order, so `active` and the viewer's document never disagree.
+let queue = Promise.resolve();
+let pending = 0;
+function serial(task) {
+  pending++;
+  thumbList.inert = true; // page indices on screen may be stale until the queue drains
+  queue = queue
+    .then(task)
+    .catch((err) => toast(err.message))
+    .finally(() => { if (--pending === 0) thumbList.inert = false; });
+  return queue;
+}
+
+// ---------- tabs ----------
+function renderTabs() {
+  tabStrip.replaceChildren(...tabs.map((tab) => {
+    const el = document.createElement("div");
+    el.className = "tab" + (tab === active ? " active" : "");
+    el.setAttribute("role", "tab");
+    el.setAttribute("aria-selected", String(tab === active));
+    el.innerHTML = `<button class="tab-name"></button>
+      <button class="tab-close" aria-label="Close">×</button>`;
+    el.querySelector(".tab-name").textContent = (tab.dirty ? "● " : "") + tab.name;
+    el.querySelector(".tab-name").title = tab.name;
+    el.querySelector(".tab-name").onclick = () => serial(() => activateNow(tab));
+    el.querySelector(".tab-close").onclick = () => serial(() => closeTabNow(tab));
+    return el;
+  }));
+  app.classList.toggle("empty", tabs.length === 0);
+}
+
+/** Keep annotations/form input when leaving a tab. */
+async function stashActive() {
+  if (!active || !viewer.hasEdits()) return;
+  if (viewer.isModified()) active.dirty = true; // read first: saving resets pdf.js's flag
+  active.bytes = await viewer.currentBytes(active.bytes);
+}
+
+async function activateNow(tab, { keepView = false } = {}) {
+  if (active && active !== tab) await stashActive();
+  active = tab;
+  renderTabs();
+  thumbs?.destroy();
+  thumbs = null;
+  try {
+    const doc = await viewer.open(tab.bytes, { keepView });
+    thumbs = renderThumbs(thumbList, doc, pageHandlers);
+    pageTotal.textContent = `/ ${doc.numPages}`;
+    pageInput.max = doc.numPages;
+    pageInput.value = 1;
+    if (searchInput.value) viewer.find(searchInput.value);
+  } catch (err) {
+    if (!(err instanceof CancelledError)) toast(`Couldn't open “${tab.name}”: ${err.message}`);
+    await removeTabNow(tab);
+  }
+}
+
+async function addTabNow(name, bytes, { dirty = false } = {}) {
+  const tab = { id: nextId++, name, bytes, dirty };
+  tabs.push(tab);
+  await activateNow(tab);
+}
+
+async function removeTabNow(tab) {
+  const i = tabs.indexOf(tab);
+  if (i !== -1) tabs.splice(i, 1);
+  if (active === tab) {
+    active = null;
+    const next = tabs[Math.min(i, tabs.length - 1)];
+    if (next) await activateNow(next);
+    else { thumbs?.destroy(); thumbs = null; await viewer.close(); }
+  }
+  renderTabs();
+}
+
+async function closeTabNow(tab) {
+  const unsaved = tab.dirty || (tab === active && viewer.isModified());
+  if (unsaved && !confirm(`Close “${tab.name}” without saving?`)) return;
+  await removeTabNow(tab);
+}
+
+// ---------- files ----------
+async function readFiles(fileList) {
+  const pdfs = [...fileList].filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  if (pdfs.length < fileList.length) toast("Only PDF files can be opened.");
+  return Promise.all(pdfs.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+}
+
+async function openFiles(fileList) {
+  for (const { name, bytes } of await readFiles(fileList)) serial(() => addTabNow(name, bytes));
+}
+
+const saveActive = () => serial(async () => {
+  if (!active) return;
+  const bytes = await viewer.currentBytes(active.bytes);
+  if (!(await saveBytes(bytes, active.name))) return;
+  active.bytes = bytes;
+  active.dirty = false;
+  viewer.markSaved();
+  renderTabs();
+  toast("Saved.");
+});
+
+// shortcut: browser save = download or Chromium's file picker; the Tauri shell will write files directly.
+async function saveBytes(bytes, name) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+      });
+      const out = await handle.createWritable();
+      await out.write(bytes);
+      await out.close();
+      return true;
+    } catch (err) {
+      if (err.name === "AbortError") return false;
+      throw new Error(`Save failed: ${err.message}`);
+    }
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return true;
+}
+
+// ---------- page operations ----------
+const editPages = (op) => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  const bytes = await viewer.currentBytes(tab.bytes);
+  tab.bytes = await op(bytes);
+  tab.dirty = true;
+  await activateNow(tab, { keepView: true });
+});
+
+const baseName = (name) => name.replace(/\.pdf$/i, "");
+
+const pageHandlers = {
+  onSelect: (i) => viewer.goToPage(i + 1),
+  onRotate: (i) => editPages((b) => rotatePages(b, [i], 90)),
+  onDelete: (i) => editPages((b) => deletePages(b, [i])),
+  onMove: (from, to) => editPages((b) => {
+    const order = [...Array(viewer.pageCount).keys()];
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    return applyPageOrder(b, order);
+  }),
+  onExtract: (i) => serial(async () => {
+    if (!active) return;
+    const bytes = await extractPages(await viewer.currentBytes(active.bytes), [i]);
+    await addTabNow(`${baseName(active.name)} – page ${i + 1}.pdf`, bytes, { dirty: true });
+  }),
+};
+
+async function combineWith(fileList) {
+  const files = await readFiles(fileList);
+  if (!files.length) return;
+  if (!tabs.length) return openFiles(fileList);
+  await editPages((b) => mergePdfs([b, ...files.map((f) => f.bytes)]));
+}
+
+// ---------- tools, search, zoom, paging ----------
+function setTool(mode) {
+  viewer.setTool(mode);
+  markTool(mode);
+}
+function markTool(mode) {
+  for (const b of document.querySelectorAll("[data-tool]")) {
+    b.setAttribute("aria-pressed", String(Tool[b.dataset.tool] === mode));
+  }
+}
+
+viewer.eventBus.on("pagechanging", ({ pageNumber }) => {
+  pageInput.value = pageNumber;
+  thumbs?.setActive(pageNumber);
+});
+// pdf.js can change mode itself (e.g. double-clicking an existing drawing); mirror it.
+viewer.eventBus.on("annotationeditormodechanged", ({ mode }) => markTool(mode));
+viewer.eventBus.on("scalechanging", ({ scale }) => {
+  zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+});
+const showMatches = ({ matchesCount }) => {
+  if (!searchInput.value || !matchesCount) { searchCount.textContent = ""; return; }
+  searchCount.textContent = matchesCount.total
+    ? `${matchesCount.current} / ${matchesCount.total}` : "No matches";
+};
+viewer.eventBus.on("updatefindmatchescount", showMatches);
+viewer.eventBus.on("updatefindcontrolstate", showMatches);
+
+// ---------- wiring ----------
+const openInput = $("#open-input");
+const combineInput = $("#combine-input");
+openInput.onchange = () => { openFiles(openInput.files); openInput.value = ""; };
+combineInput.onchange = () => { combineWith(combineInput.files); combineInput.value = ""; };
+for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => openInput.click();
+$("#combine").onclick = () => combineInput.click();
+$("#save").onclick = saveActive;
+$("#zoom-in").onclick = () => viewer.zoomIn();
+$("#zoom-out").onclick = () => viewer.zoomOut();
+$("#zoom-label").onclick = () => viewer.fitWidth();
+for (const b of document.querySelectorAll("[data-tool]")) b.onclick = () => setTool(Tool[b.dataset.tool]);
+
+pageInput.onchange = () => {
+  const n = Number(pageInput.value);
+  if (Number.isInteger(n) && n >= 1 && n <= viewer.pageCount) viewer.goToPage(n);
+};
+searchInput.oninput = () => viewer.find(searchInput.value);
+searchInput.onkeydown = (e) => {
+  if (e.key === "Enter") viewer.find(searchInput.value, { again: true, previous: e.shiftKey });
+  if (e.key === "Escape") { searchInput.value = ""; viewer.find(""); searchInput.blur(); }
+};
+
+document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key === "o") { e.preventDefault(); openInput.click(); }
+  else if (mod && e.key === "s") { e.preventDefault(); saveActive(); }
+  else if (mod && e.key === "f") { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  else if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); viewer.zoomIn(); }
+  else if (mod && e.key === "-") { e.preventDefault(); viewer.zoomOut(); }
+  else if (e.key === "Escape" && document.activeElement === document.body) setTool(Tool.SELECT);
+});
+
+// Drop PDFs anywhere: opens them as new tabs.
+window.addEventListener("dragover", (e) => {
+  if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); app.classList.add("dropping"); }
+});
+window.addEventListener("dragleave", (e) => { if (!e.relatedTarget) app.classList.remove("dropping"); });
+window.addEventListener("drop", (e) => {
+  app.classList.remove("dropping");
+  if (!e.dataTransfer.files.length) return;
+  e.preventDefault();
+  openFiles(e.dataTransfer.files);
+});
+
+window.addEventListener("beforeunload", (e) => {
+  if (tabs.some((t) => t.dirty) || viewer.isModified()) e.preventDefault();
+});
+
+renderTabs();
