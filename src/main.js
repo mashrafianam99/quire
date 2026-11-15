@@ -343,18 +343,33 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
       if (!active) return;
       const tab = active;
       const bytes = await viewer.currentBytes(tab.bytes);
-      const line = (await loadTextEdit()).findLine(bytes, pageIndex, point);
-      if (!line) { toast("No text there. Click on a line of text."); return; }
-      found = { ...line, tab, bytes }; // replace exactly what was read
+      const para = (await loadTextEdit()).findParagraph(bytes, pageIndex, point);
+      if (!para) { toast("No text there. Click on a line of text."); return; }
+      found = { ...para, tab, bytes }; // replace exactly what was read
     });
     return found;
   },
-  commit: (line, text) => serial(async () => {
-    if (line.tab !== active) return; // the tab changed meanwhile; drop the edit
-    line.tab.bytes = await (await loadTextEdit()).replaceLine(line.bytes, line, text);
-    line.tab.dirty = true;
-    await activateNow(line.tab, { keepView: true });
-    textEditor.start(); // reopening the document ended the mode; stay in it for the next line
+  commit: (para, text, { force }) => serial(async () => {
+    if (para.tab !== active) return undefined; // the tab changed meanwhile; drop the edit
+    const result = await (await loadTextEdit()).replaceParagraph(para.bytes, para, text, { allowOverflow: force });
+    if (!result.bytes) {
+      const n = result.overflowLines;
+      toast(`This needs about ${n} more line${n === 1 ? "" : "s"} than there's room for. `
+        + "Shorten it, or press Enter again to place it anyway (it will overlap the text below).");
+      return { overflowLines: n };
+    }
+    para.tab.bytes = result.bytes;
+    para.tab.dirty = true;
+    await activateNow(para.tab, { keepView: true });
+    textEditor.start(); // reopening the document ended the mode; stay in it for the next paragraph
+    const notes = [];
+    if (result.overflows) notes.push("The paragraph grew and may now overlap the text below it.");
+    if (!result.usedOwnFont) notes.push("This document's font couldn't be reused, so a similar standard font was used.");
+    else if (result.fallbackChars.length) {
+      notes.push(`The document's font has no “${result.fallbackChars.join(" ")}”, so a similar font was used for ${result.fallbackChars.length === 1 ? "it" : "them"}.`);
+    }
+    if (notes.length) toast(notes.join(" "));
+    return undefined;
   }),
   onChange: () => { $("#edit-text").setAttribute("aria-pressed", String(textEditor.active)); syncSelectButton(); },
 });
@@ -368,7 +383,7 @@ function startTextEditing() {
   if (!active) return;
   setTool(Tool.SELECT);
   textEditor.start();
-  toast("Click any line of text to edit it. Enter applies, Esc cancels.");
+  toast("Click any text to edit its paragraph. Enter applies, Shift+Enter adds a line break, Esc cancels.");
 }
 
 const printActive = () => serial(async () => {

@@ -241,5 +241,5 @@ button, input { font: inherit; color: inherit; }
 .text-edit-box {
   position: absolute; z-index: 11; box-sizing: border-box; margin: 0; padding: 0 2px;
   border: 0; border-radius: 2px; outline: 2px solid var(--accent); background: #fff;
-  line-height: 1; field-sizing: content;
+  field-sizing: content; resize: none; overflow: hidden; white-space: pre-wrap; box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
 }
