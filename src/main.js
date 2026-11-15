@@ -1,6 +1,8 @@
 import "./styles.css";
-import { createViewer, Tool, CancelledError } from "./viewer.js";
+import { createViewer, Tool, Param, HIGHLIGHT_COLORS, CancelledError } from "./viewer.js";
 import { renderThumbs } from "./thumbs.js";
+import { askForSignature } from "./signature.js";
+import { printPdf } from "./print.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -220,7 +222,70 @@ function markTool(mode) {
   for (const b of document.querySelectorAll("[data-tool]")) {
     b.setAttribute("aria-pressed", String(Tool[b.dataset.tool] === mode));
   }
+  renderStyleBar(Object.keys(Tool).find((name) => Tool[name] === mode));
 }
+
+// ---------- pen / text / highlight style ----------
+const PEN_COLORS = ["#000000", "#1d4ed8", "#dc2626", "#15803d", "#ea580c", "#7c3aed"];
+let toolStyles = {
+  DRAW: { colors: PEN_COLORS, color: "#000000", colorParam: Param.INK_COLOR,
+    sizeParam: Param.INK_THICKNESS, min: 1, max: 20, size: 3 },
+  TEXT: { colors: PEN_COLORS, color: "#000000", colorParam: Param.FREETEXT_COLOR,
+    sizeParam: Param.FREETEXT_SIZE, min: 8, max: 72, size: 14 },
+  HIGHLIGHT: { colors: Object.values(HIGHLIGHT_COLORS), color: HIGHLIGHT_COLORS.yellow,
+    colorParam: Param.HIGHLIGHT_COLOR },
+};
+for (const s of Object.values(toolStyles)) {
+  viewer.setStyle(s.colorParam, s.color);
+  if (s.sizeParam) viewer.setStyle(s.sizeParam, s.size);
+}
+
+const styleBar = $("#style-bar");
+const sizeInput = $("#style-size");
+let styledTool = null;
+
+function updateStyle(name, change) {
+  toolStyles = { ...toolStyles, [name]: { ...toolStyles[name], ...change } };
+  const s = toolStyles[name];
+  if ("color" in change) viewer.setStyle(s.colorParam, s.color);
+  if ("size" in change) viewer.setStyle(s.sizeParam, s.size);
+  renderStyleBar(name);
+}
+
+function renderStyleBar(name) {
+  styledTool = name;
+  const s = toolStyles[name];
+  styleBar.hidden = !s;
+  if (!s) return;
+  styleBar.querySelector(".swatches").replaceChildren(...s.colors.map((color) => {
+    const b = document.createElement("button");
+    b.className = "swatch";
+    b.style.background = color;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(color === s.color));
+    b.setAttribute("aria-label", `Color ${color}`);
+    b.onclick = () => updateStyle(name, { color });
+    return b;
+  }));
+  sizeInput.parentElement.hidden = !s.sizeParam;
+  if (s.sizeParam) Object.assign(sizeInput, { min: s.min, max: s.max, value: s.size });
+}
+sizeInput.oninput = () => {
+  if (toolStyles[styledTool]?.sizeParam) updateStyle(styledTool, { size: Number(sizeInput.value) });
+};
+
+// ---------- sign & print ----------
+async function signDocument() {
+  if (!active) return;
+  const file = await askForSignature();
+  if (file) serial(() => viewer.addImage(file));
+}
+
+const printActive = () => serial(async () => {
+  if (!active) return;
+  toast("Preparing to print…");
+  await printPdf(await viewer.currentBytes(active.bytes));
+});
 
 viewer.eventBus.on("pagechanging", ({ pageNumber }) => {
   pageInput.value = pageNumber;
@@ -247,6 +312,10 @@ combineInput.onchange = () => { combineWith(combineInput.files); combineInput.va
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => openInput.click();
 $("#combine").onclick = () => combineInput.click();
 $("#save").onclick = saveActive;
+$("#print").onclick = printActive;
+$("#sign").onclick = signDocument;
+$("#undo").onclick = () => viewer.undo();
+$("#redo").onclick = () => viewer.redo();
 $("#zoom-in").onclick = () => viewer.zoomIn();
 $("#zoom-out").onclick = () => viewer.zoomOut();
 $("#zoom-label").onclick = () => viewer.fitWidth();
@@ -266,6 +335,7 @@ document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key === "o") { e.preventDefault(); openInput.click(); }
   else if (mod && e.key === "s") { e.preventDefault(); saveActive(); }
+  else if (mod && e.key === "p") { e.preventDefault(); printActive(); }
   else if (mod && e.key === "f") { e.preventDefault(); searchInput.focus(); searchInput.select(); }
   else if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); viewer.zoomIn(); }
   else if (mod && e.key === "-") { e.preventDefault(); viewer.zoomOut(); }

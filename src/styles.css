@@ -183,3 +183,36 @@ button, input { font: inherit; color: inherit; }
   .search input { width: 160px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---------- style bar ---------- */
+.style-bar[hidden] { display: none; }
+.style-bar { gap: 10px; padding-left: 4px; }
+.swatches { display: flex; gap: 6px; }
+.swatch {
+  width: 22px; height: 22px; border-radius: 50%; padding: 0; cursor: pointer;
+  border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border);
+}
+.swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--accent); }
+.swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.size { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.size[hidden] { display: none; }
+.size input { width: 96px; accent-color: var(--accent); }
+
+/* ---------- signature dialog ---------- */
+.sign-dialog { width: min(620px, calc(100vw - 32px)); }
+.sign-pad {
+  display: block; width: 100%; height: 200px; touch-action: none; cursor: crosshair;
+  background: #fff; border: 1px dashed var(--border); border-radius: var(--radius);
+}
+.sign-hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.q-dialog menu .spacer { flex: 1; }
+
+/* ---------- printing ---------- */
+#print-root { display: none; }
+@media print {
+  @page { margin: 0; }
+  body > :not(#print-root) { display: none !important; }
+  html, body { background: #fff; height: auto; }
+  #print-root { display: block; }
+  #print-root img { display: block; width: 100%; break-after: page; }
+}

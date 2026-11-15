@@ -19,14 +19,24 @@
   <div class="toolbar" role="toolbar" aria-label="Document tools">
     <div class="group">
       <button class="btn primary" id="save" title="Save (Ctrl+S)">Save</button>
+      <button class="btn" id="print" title="Print (Ctrl+P)">Print</button>
       <button class="btn" id="combine" title="Append other PDFs to this one">Combine files</button>
     </div>
     <div class="group tools" aria-label="Edit mode">
       <button class="btn" data-tool="SELECT" aria-pressed="true" title="Select (Esc)">Select</button>
       <button class="btn" data-tool="HIGHLIGHT" aria-pressed="false" title="Highlight text">Highlight</button>
-      <button class="btn" data-tool="DRAW" aria-pressed="false" title="Draw or sign">Draw / Sign</button>
+      <button class="btn" data-tool="DRAW" aria-pressed="false" title="Draw freehand">Draw</button>
       <button class="btn" data-tool="TEXT" aria-pressed="false" title="Add text">Text</button>
       <button class="btn" data-tool="IMAGE" aria-pressed="false" title="Add image">Image</button>
+      <button class="btn" id="sign" title="Add your signature">Sign</button>
+    </div>
+    <div class="group style-bar" id="style-bar" aria-label="Style" hidden>
+      <div class="swatches" role="radiogroup" aria-label="Color"></div>
+      <label class="size"><span>Size</span><input type="range" id="style-size" /></label>
+    </div>
+    <div class="group">
+      <button class="btn icon" id="undo" aria-label="Undo" title="Undo (Ctrl+Z)">↶</button>
+      <button class="btn icon" id="redo" aria-label="Redo" title="Redo (Ctrl+Y)">↷</button>
     </div>
     <div class="group">
       <label class="page-nav">
@@ -66,6 +76,20 @@
 
 <input id="open-input" type="file" accept="application/pdf,.pdf" multiple hidden />
 <input id="combine-input" type="file" accept="application/pdf,.pdf" multiple hidden />
+
+<dialog id="sign-dialog" class="q-dialog sign-dialog">
+  <form method="dialog">
+    <h2>Your signature</h2>
+    <canvas class="sign-pad" aria-label="Signature drawing area"></canvas>
+    <p class="sign-hint"></p>
+    <menu>
+      <button class="btn" type="button" data-sign="clear">Clear</button>
+      <span class="spacer"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Place signature</button>
+    </menu>
+  </form>
+</dialog>
 
 <dialog id="password-dialog" class="q-dialog">
   <form method="dialog">

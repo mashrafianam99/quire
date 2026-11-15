@@ -18,7 +18,10 @@ npm run build    # static build in dist/
 - Open many PDFs in tabs (button, Ctrl+O, or drag-and-drop); password-protected files prompt for the password
 - Fast rendering with selectable text, links and fillable forms (pdf.js)
 - Search with match count (Ctrl+F, Enter / Shift+Enter)
-- Annotate: highlight, draw / sign, text boxes, images
+- Annotate: highlight, freehand draw, text boxes, images — with color and size controls
+- Sign: draw your signature once (kept on this device only), then place it as a movable, resizable image
+- Undo / redo (buttons, or Ctrl+Z / Ctrl+Y while editing)
+- Print (Ctrl+P) — pages are rendered to images, so it works the same on every platform
 - Pages sidebar: rotate, delete, extract to a new tab, drag to reorder
 - Combine files: append other PDFs to the current one
 - Save keeps annotations and form input (Ctrl+S); warns before closing with unsaved changes

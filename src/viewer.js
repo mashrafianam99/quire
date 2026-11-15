@@ -6,7 +6,14 @@ import {
 } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 
-const { AnnotationEditorType, PasswordResponses } = pdfjsLib;
+const { AnnotationEditorType, AnnotationEditorParamsType, PasswordResponses } = pdfjsLib;
+
+export const Param = AnnotationEditorParamsType;
+
+// pdf.js's default highlighter palette; it needs the names to label highlights.
+export const HIGHLIGHT_COLORS = {
+  yellow: "#FFFF98", green: "#53FFBC", blue: "#80EBFF", pink: "#FFCBE6", red: "#FF4F5F",
+};
 
 export const Tool = {
   SELECT: AnnotationEditorType.NONE,
@@ -21,6 +28,19 @@ const ASSETS = new URL("pdfjs/", document.baseURI).href;
 
 export class CancelledError extends Error {}
 
+/** Start loading a PDF with the asset URLs pdf.js needs. */
+export function loadPdf(bytes) {
+  return pdfjsLib.getDocument({
+    data: bytes.slice(), // pdf.js transfers (detaches) the buffer it is given
+    cMapUrl: ASSETS + "cmaps/",
+    standardFontDataUrl: ASSETS + "standard_fonts/",
+    wasmUrl: ASSETS + "wasm/",
+    iccUrl: ASSETS + "iccs/",
+  });
+}
+
+const MODE_SWITCH_TIMEOUT_MS = 5000;
+
 /** @param {HTMLElement} container absolutely positioned, with a `.pdfViewer` child */
 export function createViewer(container, { askPassword }) {
   const eventBus = new EventBus();
@@ -29,6 +49,8 @@ export function createViewer(container, { askPassword }) {
   const viewer = new PDFViewer({
     container, eventBus, linkService, findController,
     annotationEditorMode: AnnotationEditorType.NONE,
+    annotationEditorHighlightColors: Object.entries(HIGHLIGHT_COLORS)
+      .map(([name, hex]) => `${name}=${hex}`).join(","),
   });
   linkService.setViewer(viewer);
 
@@ -41,10 +63,38 @@ export function createViewer(container, { askPassword }) {
     if (!doc || !uiManager || viewer.annotationEditorMode === tool) return;
     viewer.annotationEditorMode = { mode: tool };
   };
+  // Pen/text/highlight styles the user picked; pdf.js keeps them per editor type, and we
+  // resend them whenever editing turns on so every document gets them.
+  const styles = new Map();
+  const sendStyle = (type, value) =>
+    eventBus.dispatch("switchannotationeditorparams", { source: viewer, type, value });
   eventBus.on("annotationeditoruimanager", (e) => {
     uiManager = e.uiManager;
     setTimeout(applyTool, 0); // let pdf.js finish setDocument first
   });
+  eventBus.on("annotationeditormodechanged", ({ mode }) => {
+    if (mode !== AnnotationEditorType.NONE) for (const [t, v] of styles) sendStyle(t, v);
+  });
+
+  /** Switch pdf.js into `mode` and wait until it is really there. */
+  function enterMode(mode) {
+    tool = mode;
+    if (viewer.annotationEditorMode === mode) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const done = (e) => {
+        if (e.mode !== mode) return;
+        eventBus.off("annotationeditormodechanged", done);
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        eventBus.off("annotationeditormodechanged", done);
+        reject(new Error("Couldn't switch editing mode — try again."));
+      }, MODE_SWITCH_TIMEOUT_MS);
+      eventBus.on("annotationeditormodechanged", done);
+      viewer.annotationEditorMode = { mode };
+    });
+  }
   // Ink strokes live in an open "drawing session" until it ends; only then are they in the
   // document. End it before anyone asks whether there are edits.
   const flushDrawing = () => uiManager?.endCurrentEditing();
@@ -58,13 +108,7 @@ export function createViewer(container, { askPassword }) {
 
   async function open(bytes, { keepView = false } = {}) {
     let cancelled = false;
-    const task = pdfjsLib.getDocument({
-      data: bytes.slice(), // pdf.js transfers (detaches) the buffer it is given
-      cMapUrl: ASSETS + "cmaps/",
-      standardFontDataUrl: ASSETS + "standard_fonts/",
-      wasmUrl: ASSETS + "wasm/",
-      iccUrl: ASSETS + "iccs/",
-    });
+    const task = loadPdf(bytes);
     task.onPassword = async (update, reason) => {
       const pw = await askPassword(reason === PasswordResponses.INCORRECT_PASSWORD);
       if (pw == null) { cancelled = true; task.destroy(); } else update(pw);
@@ -115,6 +159,19 @@ export function createViewer(container, { askPassword }) {
     /** Bytes including any form input and annotations. */
     currentBytes: async (fallback) => (hasEdits() ? doc.saveDocument() : fallback),
     setTool: (mode) => { tool = mode; applyTool(); },
+    /** Set a default style (Param.*) for new drawings; also restyles the selected ones. */
+    setStyle: (type, value) => {
+      styles.set(type, value);
+      if (uiManager) sendStyle(type, value);
+    },
+    /** Place an image (e.g. a signature) as a movable, resizable annotation on the visible page. */
+    addImage: async (file) => {
+      if (!doc || !uiManager) throw new Error("The document is still loading — try again in a moment.");
+      await enterMode(AnnotationEditorType.STAMP);
+      await uiManager.currentLayer.pasteEditor({ mode: AnnotationEditorType.STAMP }, { bitmapFile: file });
+    },
+    undo: () => eventBus.dispatch("editingaction", { source: viewer, name: "undo" }),
+    redo: () => eventBus.dispatch("editingaction", { source: viewer, name: "redo" }),
     find: (query, { again = false, previous = false } = {}) =>
       eventBus.dispatch("find", {
         source: null, type: again ? "again" : "", query, caseSensitive: false,
