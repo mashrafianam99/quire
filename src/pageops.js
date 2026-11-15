@@ -2,12 +2,12 @@
 // returns new bytes, so the caller's copy is never mutated.
 import { PDFDocument, degrees } from "pdf-lib";
 
-async function load(bytes) {
+export async function loadForEditing(bytes) {
   try {
     return await PDFDocument.load(bytes);
   } catch (err) {
     if (err?.constructor?.name === "EncryptedPDFError") {
-      throw new Error("Page tools can't edit password-protected PDFs yet.");
+      throw new Error("Quire can't edit password-protected PDFs yet.");
     }
     throw err;
   }
@@ -29,7 +29,7 @@ function checkIndices(indices, pageCount, { unique = true } = {}) {
 
 /** Keep only `order` pages, in that order. Edits in place so forms and outlines survive. */
 export async function applyPageOrder(bytes, order) {
-  const doc = await load(bytes);
+  const doc = await loadForEditing(bytes);
   checkIndices(order, doc.getPageCount());
   const pages = doc.getPages();
   for (let i = pages.length - 1; i >= 0; i--) doc.removePage(i);
@@ -38,7 +38,7 @@ export async function applyPageOrder(bytes, order) {
 }
 
 export async function deletePages(bytes, indices) {
-  const doc = await load(bytes);
+  const doc = await loadForEditing(bytes);
   const count = doc.getPageCount();
   checkIndices(indices, count);
   const drop = new Set(indices);
@@ -50,7 +50,7 @@ export async function deletePages(bytes, indices) {
 /** Rotate pages by `delta` degrees (a multiple of 90). */
 export async function rotatePages(bytes, indices, delta) {
   if (delta % 90 !== 0) throw new Error("Rotation must be a multiple of 90°.");
-  const doc = await load(bytes);
+  const doc = await loadForEditing(bytes);
   checkIndices(indices, doc.getPageCount());
   for (const i of indices) {
     const page = doc.getPage(i);
@@ -62,7 +62,7 @@ export async function rotatePages(bytes, indices, delta) {
 
 /** Copy the chosen pages into a brand-new PDF. */
 export async function extractPages(bytes, indices) {
-  const src = await load(bytes);
+  const src = await loadForEditing(bytes);
   checkIndices(indices, src.getPageCount(), { unique: false });
   const out = await PDFDocument.create();
   for (const page of await out.copyPages(src, indices)) out.addPage(page);
@@ -74,7 +74,7 @@ export async function mergePdfs(list) {
   if (!list?.length) throw new Error("Nothing to merge.");
   const out = await PDFDocument.create();
   for (const bytes of list) {
-    const src = await load(bytes);
+    const src = await loadForEditing(bytes);
     for (const page of await out.copyPages(src, src.getPageIndices())) out.addPage(page);
   }
   return out.save();

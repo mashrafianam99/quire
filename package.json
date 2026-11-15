@@ -11,8 +11,11 @@
   "keywords": [],
   "author": "",
   "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "mupdf": "^1.28.6",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.5.438"
+    "pdfjs-dist": "^6.5.438",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "vite": "^8.3.8"

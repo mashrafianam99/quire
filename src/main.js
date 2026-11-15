@@ -281,6 +281,21 @@ async function signDocument() {
   if (file) serial(() => viewer.addImage(file));
 }
 
+const recognizeText = () => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  const { ocrPdf } = await import("./ocr.js"); // large; load only when used
+  const bytes = await viewer.currentBytes(tab.bytes);
+  const result = await ocrPdf(bytes, (n, total) => toast(`Recognizing text… page ${n} of ${total}`));
+  if (!result.bytes) { toast("This PDF already has selectable text on every page."); return; }
+  tab.bytes = result.bytes;
+  tab.dirty = true;
+  await activateNow(tab, { keepView: true });
+  const plural = (n) => `${n} page${n === 1 ? "" : "s"}`;
+  toast(`Text recognized on ${plural(result.recognized)}.`
+    + (result.skipped ? ` ${plural(result.skipped)} already had text.` : ""));
+});
+
 const printActive = () => serial(async () => {
   if (!active) return;
   toast("Preparing to print…");
@@ -313,6 +328,7 @@ for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => open
 $("#combine").onclick = () => combineInput.click();
 $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
+$("#ocr").onclick = recognizeText;
 $("#sign").onclick = signDocument;
 $("#undo").onclick = () => viewer.undo();
 $("#redo").onclick = () => viewer.redo();
