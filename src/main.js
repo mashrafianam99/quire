@@ -330,6 +330,13 @@ $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#sign").onclick = signDocument;
+const imageInput = $("#image-input");
+$("#add-image").onclick = () => active && imageInput.click();
+imageInput.onchange = () => {
+  const [file] = imageInput.files;
+  imageInput.value = "";
+  if (file) serial(() => viewer.addImage(file));
+};
 $("#undo").onclick = () => viewer.undo();
 $("#redo").onclick = () => viewer.redo();
 $("#zoom-in").onclick = () => viewer.zoomIn();
@@ -356,7 +363,17 @@ document.addEventListener("keydown", (e) => {
   else if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); viewer.zoomIn(); }
   else if (mod && e.key === "-") { e.preventDefault(); viewer.zoomOut(); }
   else if (e.key === "Escape" && document.activeElement === document.body) setTool(Tool.SELECT);
+  // pdf.js editor shortcuts listen on window and would eat Backspace/arrows typed into our inputs.
+  if (e.target.matches?.("input, textarea")) e.stopPropagation();
 });
+
+// Ctrl+wheel and touchpad pinch zoom the document, never the whole app.
+const ZOOM_SPEED = 0.002; // ~20% per mouse-wheel notch (deltaY 100); pinch sends small deltas
+document.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  if (active && e.target.closest?.("#viewer")) viewer.zoomBy(Math.exp(-e.deltaY * ZOOM_SPEED), [e.clientX, e.clientY]);
+}, { passive: false });
 
 // Drop PDFs anywhere: opens them as new tabs.
 window.addEventListener("dragover", (e) => {

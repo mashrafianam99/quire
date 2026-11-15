@@ -179,6 +179,8 @@ export function createViewer(container, { askPassword }) {
       }),
     zoomIn: () => viewer.increaseScale(),
     zoomOut: () => viewer.decreaseScale(),
+    /** Zoom by a factor, keeping the point under `origin` (client x,y) in place. */
+    zoomBy: (scaleFactor, origin) => viewer.updateScale({ scaleFactor, origin, drawingDelay: 400 }),
     fitWidth: () => { viewer.currentScaleValue = "page-width"; },
     goToPage: (n) => { viewer.currentPageNumber = n; },
     get pageCount() { return viewer.pagesCount; },

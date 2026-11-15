@@ -28,7 +28,7 @@
       <button class="btn" data-tool="HIGHLIGHT" aria-pressed="false" title="Highlight text">Highlight</button>
       <button class="btn" data-tool="DRAW" aria-pressed="false" title="Draw freehand">Draw</button>
       <button class="btn" data-tool="TEXT" aria-pressed="false" title="Add text">Text</button>
-      <button class="btn" data-tool="IMAGE" aria-pressed="false" title="Add image">Image</button>
+      <button class="btn" id="add-image" title="Add a picture to this page">Image</button>
       <button class="btn" id="sign" title="Add your signature">Sign</button>
     </div>
     <div class="group style-bar" id="style-bar" aria-label="Style" hidden>
@@ -77,6 +77,7 @@
 
 <input id="open-input" type="file" accept="application/pdf,.pdf" multiple hidden />
 <input id="combine-input" type="file" accept="application/pdf,.pdf" multiple hidden />
+<input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
 
 <dialog id="sign-dialog" class="q-dialog sign-dialog">
   <form method="dialog">
