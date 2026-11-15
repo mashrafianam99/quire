@@ -13,26 +13,6 @@ export function createRedactor(viewer, container, onChange) {
   let active = false;
   let marks = []; // {page: 0-based, rect: [x0,y0,x1,y1] in PDF user space}
 
-  function pagePoint(pageDiv, e) {
-    const view = viewer.pageView(Number(pageDiv.dataset.pageNumber));
-    const box = pageDiv.getBoundingClientRect();
-    // clientWidth excludes the page border; the ratio also covers CSS-scaled pages mid-zoom
-    const k = view.viewport.width / pageDiv.clientWidth;
-    return [(e.clientX - box.left - pageDiv.clientLeft) * k, (e.clientY - box.top - pageDiv.clientTop) * k];
-  }
-
-  function place(el, view, rect) {
-    const { viewport } = view;
-    const [x0, y0] = viewport.convertToViewportPoint(rect[0], rect[1]);
-    const [x1, y1] = viewport.convertToViewportPoint(rect[2], rect[3]);
-    Object.assign(el.style, {
-      left: `${(Math.min(x0, x1) / viewport.width) * 100}%`,
-      top: `${(Math.min(y0, y1) / viewport.height) * 100}%`,
-      width: `${(Math.abs(x1 - x0) / viewport.width) * 100}%`,
-      height: `${(Math.abs(y1 - y0) / viewport.height) * 100}%`,
-    });
-  }
-
   function draw(pageNumber) {
     const view = viewer.pageView(pageNumber);
     if (!view?.div) return;
@@ -43,7 +23,7 @@ export function createRedactor(viewer, container, onChange) {
       el.className = "redact-mark";
       el.dataset.index = i;
       el.setAttribute("aria-label", "Redaction area (click to remove)");
-      place(el, view, mark.rect);
+      viewer.placeOnPage(el, pageNumber, mark.rect);
       view.div.append(el);
     });
   }
@@ -69,25 +49,22 @@ export function createRedactor(viewer, container, onChange) {
       return;
     }
 
-    const view = viewer.pageView(pageNumber);
-    const start = pagePoint(pageDiv, e);
+    const start = viewer.pdfPoint(pageDiv, e);
     const ghost = document.createElement("div");
     ghost.className = "redact-mark drawing";
     pageDiv.append(ghost);
-    const rectTo = (end) => [...view.viewport.convertToPdfPoint(...start), ...view.viewport.convertToPdfPoint(...end)];
+    const rectTo = (end) => [Math.min(start[0], end[0]), Math.min(start[1], end[1]),
+      Math.max(start[0], end[0]), Math.max(start[1], end[1])];
 
-    const move = (ev) => place(ghost, view, rectTo(pagePoint(pageDiv, ev)));
+    const move = (ev) => viewer.placeOnPage(ghost, pageNumber, rectTo(viewer.pdfPoint(pageDiv, ev)));
     const up = (ev) => {
       container.removeEventListener("pointermove", move);
       container.removeEventListener("pointerup", up);
       container.removeEventListener("pointercancel", up);
       ghost.remove();
-      const end = pagePoint(pageDiv, ev);
-      const k = pageDiv.clientWidth / view.viewport.width; // back to screen pixels
-      if (ev.type === "pointercancel"
-        || Math.abs(end[0] - start[0]) * k < MIN_DRAG_PX || Math.abs(end[1] - start[1]) * k < MIN_DRAG_PX) return;
-      const [x0, y0, x1, y1] = rectTo(end);
-      const rect = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+      const rect = rectTo(viewer.pdfPoint(pageDiv, ev));
+      const minPdf = MIN_DRAG_PX / viewer.scale; // PDF points per screen pixel at this zoom
+      if (ev.type === "pointercancel" || rect[2] - rect[0] < minPdf || rect[3] - rect[1] < minPdf) return;
       setMarks([...marks, { page: pageNumber - 1, rect }], [pageNumber]);
     };
     container.setPointerCapture(e.pointerId);

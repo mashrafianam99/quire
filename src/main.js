@@ -4,6 +4,7 @@ import { renderThumbs } from "./thumbs.js";
 import { askForSignature } from "./signature.js";
 import { printPdf } from "./print.js";
 import { createRedactor } from "./redact.js";
+import { createTextEditor } from "./textedit.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -91,7 +92,8 @@ async function stashActive() {
 }
 
 async function activateNow(tab, { keepView = false } = {}) {
-  redactor.stop(); // marks belong to the document being replaced
+  redactor.stop(); // marks and open edits belong to the document being replaced
+  textEditor.stop();
   if (active && active !== tab) await stashActive();
   active = tab;
   renderTabs();
@@ -218,6 +220,7 @@ async function combineWith(fileList) {
 // ---------- tools, search, zoom, paging ----------
 function setTool(mode) {
   redactor.stop();
+  textEditor.stop();
   viewer.setTool(mode);
   markTool(mode);
 }
@@ -226,6 +229,7 @@ function markTool(mode) {
     b.setAttribute("aria-pressed", String(Tool[b.dataset.tool] === mode));
   }
   renderStyleBar(Object.keys(Tool).find((name) => Tool[name] === mode));
+  syncSelectButton();
 }
 
 // ---------- pen / text / highlight style ----------
@@ -309,6 +313,7 @@ const redactor = createRedactor(viewer, $("#viewer"), () => {
     ? `${n} area${n === 1 ? "" : "s"} marked · click one to unmark`
     : "Drag over anything you want removed";
   $("#redact-apply").disabled = !n;
+  syncSelectButton();
 });
 
 function startRedacting() {
@@ -328,6 +333,43 @@ const applyRedaction = () => serial(async () => {
   await activateNow(tab, { keepView: true });
   toast(`Permanently removed ${marks.length} area${marks.length === 1 ? "" : "s"}. Save to keep the result.`);
 });
+
+// ---------- edit text ----------
+const loadTextEdit = () => import("./textedit-pdf.js"); // MuPDF is large; load only when used
+const textEditor = createTextEditor(viewer, $("#viewer"), {
+  async find(pageIndex, point) {
+    let found = null;
+    await serial(async () => {
+      if (!active) return;
+      const tab = active;
+      const bytes = await viewer.currentBytes(tab.bytes);
+      const line = (await loadTextEdit()).findLine(bytes, pageIndex, point);
+      if (!line) { toast("No text there. Click on a line of text."); return; }
+      found = { ...line, tab, bytes }; // replace exactly what was read
+    });
+    return found;
+  },
+  commit: (line, text) => serial(async () => {
+    if (line.tab !== active) return; // the tab changed meanwhile; drop the edit
+    line.tab.bytes = await (await loadTextEdit()).replaceLine(line.bytes, line, text);
+    line.tab.dirty = true;
+    await activateNow(line.tab, { keepView: true });
+    textEditor.start(); // reopening the document ended the mode; stay in it for the next line
+  }),
+  onChange: () => { $("#edit-text").setAttribute("aria-pressed", String(textEditor.active)); syncSelectButton(); },
+});
+
+// Redact and Edit text are modes of their own, so Select shouldn't look pressed during them.
+function syncSelectButton() {
+  if (redactor.active || textEditor.active) $('[data-tool="SELECT"]').setAttribute("aria-pressed", "false");
+}
+
+function startTextEditing() {
+  if (!active) return;
+  setTool(Tool.SELECT);
+  textEditor.start();
+  toast("Click any line of text to edit it. Enter applies, Esc cancels.");
+}
 
 const printActive = () => serial(async () => {
   if (!active) return;
@@ -364,6 +406,7 @@ $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
+$("#edit-text").onclick = () => (textEditor.active ? textEditor.stop() : startTextEditing());
 $("#redact-apply").onclick = applyRedaction;
 $("#redact-cancel").onclick = () => redactor.stop();
 const imageInput = $("#image-input");

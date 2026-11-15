@@ -232,3 +232,14 @@ button, input { font: inherit; color: inherit; }
   background: rgb(0 0 0 / 0.45); outline: 2px solid #dc2626; cursor: pointer;
 }
 .redact-mark.drawing { pointer-events: none; }
+
+/* ---------- edit text ---------- */
+.viewer.text-editing .page { cursor: text; }
+.viewer.text-editing .textLayer,
+.viewer.text-editing .annotationLayer,
+.viewer.text-editing .annotationEditorLayer { pointer-events: none; }
+.text-edit-box {
+  position: absolute; z-index: 11; box-sizing: border-box; margin: 0; padding: 0 2px;
+  border: 0; border-radius: 2px; outline: 2px solid var(--accent); background: #fff;
+  line-height: 1; field-sizing: content;
+}

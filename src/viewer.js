@@ -186,5 +186,27 @@ export function createViewer(container, { askPassword }) {
     get pageCount() { return viewer.pagesCount; },
     /** pdf.js's view of page `n` (1-based): its `div` and current `viewport`. */
     pageView: (n) => viewer.getPageView(n - 1),
+    /** The PDF user-space point under a pointer event on a `.page` element. */
+    pdfPoint(pageDiv, e) {
+      const { viewport } = viewer.getPageView(Number(pageDiv.dataset.pageNumber) - 1);
+      const box = pageDiv.getBoundingClientRect();
+      // clientWidth excludes the page border; the ratio also covers CSS-scaled pages mid-zoom
+      const k = viewport.width / pageDiv.clientWidth;
+      return viewport.convertToPdfPoint(
+        (e.clientX - box.left - pageDiv.clientLeft) * k, (e.clientY - box.top - pageDiv.clientTop) * k);
+    },
+    /** Position `el` (a child of the page div) over a PDF user-space rect, in % so zoom keeps it in place. */
+    placeOnPage(el, pageNumber, rect) {
+      const { viewport } = viewer.getPageView(pageNumber - 1);
+      const [x0, y0] = viewport.convertToViewportPoint(rect[0], rect[1]);
+      const [x1, y1] = viewport.convertToViewportPoint(rect[2], rect[3]);
+      Object.assign(el.style, {
+        left: `${(Math.min(x0, x1) / viewport.width) * 100}%`,
+        top: `${(Math.min(y0, y1) / viewport.height) * 100}%`,
+        width: `${(Math.abs(x1 - x0) / viewport.width) * 100}%`,
+        height: `${(Math.abs(y1 - y0) / viewport.height) * 100}%`,
+      });
+    },
+    get scale() { return viewer.currentScale; },
   };
 }
