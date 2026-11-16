@@ -291,6 +291,87 @@ test("falls back to a standard font when the embedded one has no character map",
   assert.ok([...line.fonts].every((n) => /Helvetica/.test(n)), [...line.fonts].join());
 });
 
+// ---------- bold and italic inside a paragraph ----------
+
+const liberation = (style) => readFileSync(`node_modules/pdfjs-dist/standard_fonts/LiberationSans-${style}.ttf`);
+
+/** Each character of page 1 with its font name, in reading order. */
+function charsOf(bytes) {
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf");
+  try {
+    const out = [];
+    doc.loadPage(0).toStructuredText().walk({ onChar(c, o, font) { out.push({ c, font: font.getName() }); } });
+    return out;
+  } finally {
+    doc.destroy();
+  }
+}
+/** The fonts used for the first occurrence of `word` on page 1. */
+function fontsOfWord(bytes, word) {
+  const chars = charsOf(bytes);
+  const at = chars.map((ch) => ch.c).join("").indexOf(word);
+  assert.ok(at >= 0, `"${word}" is on the page`);
+  return [...new Set(chars.slice(at, at + word.length).map((ch) => ch.font.replace(/^[A-Z]{6}\+/, "").replace(/-\d+$/, "")))]; // subset tag, pdf-lib's suffix
+}
+
+/** Two lines, "Plain start **bold words** then *italic* end of the first line." / "**Bold** at the start of line two.", plus a bold heading. */
+async function styledPdf() {
+  const doc = await PDFDocument.create();
+  doc.registerFontkit(fontkit);
+  const [reg, bold, ital] = await Promise.all(["Regular", "Bold", "Italic"]
+    .map((s) => doc.embedFont(liberation(s), { subset: false })));
+  const page = doc.addPage([600, 800]);
+  const draw = (y, pieces) => {
+    let x = 72;
+    for (const [text, font] of pieces) {
+      page.drawText(text, { x, y, size: 12, font });
+      x += font.widthOfTextAtSize(text, 12);
+    }
+  };
+  draw(740, [["A heading", bold]]);
+  draw(700, [["Plain start ", reg], ["bold words", bold], [" then ", reg], ["italic", ital], [" end of the first line that is long.", reg]]);
+  draw(685, [["Bold", bold], [" at the start of line two.", reg]]);
+  draw(640, [["Only regular text in this other paragraph.", reg]]);
+  return doc.save();
+}
+
+test("finds the bold and italic runs of a paragraph, even when a line starts with a bold word", async () => {
+  const para = findParagraph(await styledPdf(), 0, [100, 703]);
+
+  assert.equal(para.lineCount, 2);
+  const styled = para.runs.map((r) => [r.text, para.styles[r.style].font.bold, para.styles[r.style].font.italic]);
+  assert.deepEqual(styled.filter(([, b, i]) => b || i).map(([t, b, i]) => [t.trim(), b, i]),
+    [["bold words", true, false], ["italic", false, true], ["Bold", true, false]]);
+  assert.equal(para.runs.map((r) => r.text).join(""), para.text);
+});
+
+test("an edited paragraph keeps its bold and italic words in their own fonts", async () => {
+  const bytes = await styledPdf();
+  const para = findParagraph(bytes, 0, [100, 703]);
+  const runs = [...para.runs.slice(0, -1), { ...para.runs.at(-1), text: `${para.runs.at(-1).text} Added.` }];
+
+  const result = await replaceParagraph(bytes, para, runs);
+
+  assert.deepEqual(fontsOfWord(result.bytes, "bold words"), ["LiberationSans-Bold"]);
+  assert.deepEqual(fontsOfWord(result.bytes, "italic"), ["LiberationSans-Italic"]);
+  assert.deepEqual(fontsOfWord(result.bytes, "Plain start"), ["LiberationSans"]);
+  assert.deepEqual(fontsOfWord(result.bytes, "Added."), ["LiberationSans"]);
+});
+
+test("making a word bold uses the page's own bold font, else a standard bold", async () => {
+  const bytes = await styledPdf();
+  const para = findParagraph(bytes, 0, [100, 643]); // only regular text
+  const runs = [{ text: "Only ", style: 0 }, { text: "regular", style: 0, bold: true }, { text: " text in this other paragraph.", style: 0 }];
+  const result = await replaceParagraph(bytes, para, runs);
+  assert.deepEqual(fontsOfWord(result.bytes, "regular"), ["LiberationSans-Bold"], "bold font of the heading");
+  assert.deepEqual(fontsOfWord(result.bytes, "Only"), ["LiberationSans"]);
+
+  const plain = await samplePdf(); // Times only: no bold on the page
+  const line = findParagraph(plain, 0, [130, 705]);
+  const italic = await replaceParagraph(plain, line, [{ text: "Hello ", style: 0 }, { text: "wonderful", style: 0, italic: true }, { text: " world", style: 0 }]);
+  assert.deepEqual(fontsOfWord(italic.bytes, "wonderful"), ["Times-Italic"]);
+});
+
 test("pages with whitespace-only lines still work", async () => {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);

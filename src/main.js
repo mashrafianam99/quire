@@ -409,7 +409,8 @@ function startTextEditing() {
   if (!active) return;
   setTool(Tool.SELECT);
   textEditor.start();
-  toast("Click any text to edit its paragraph. Enter applies, Shift+Enter adds a line break, Esc cancels.");
+  toast("Click any text to edit its paragraph. Enter applies, Shift+Enter adds a line break, "
+    + "Ctrl+B / Ctrl+I make text bold / italic, Esc cancels.");
 }
 
 const printActive = () => serial(async () => {
@@ -492,7 +493,7 @@ document.addEventListener("keydown", (e) => {
   else if (mod && e.key === "-") { e.preventDefault(); viewer.zoomOut(); }
   else if (e.key === "Escape" && document.activeElement === document.body) setTool(Tool.SELECT);
   // pdf.js editor shortcuts listen on window and would eat Backspace/arrows typed into our inputs.
-  if (e.target.matches?.("input, textarea")) e.stopPropagation();
+  if (e.target.matches?.("input, textarea, .text-edit-box")) e.stopPropagation();
 });
 
 // Ctrl+wheel and touchpad pinch zoom the document, never the whole app.

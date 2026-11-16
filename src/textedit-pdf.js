@@ -64,8 +64,18 @@ function readPage(page) {
   return { lines: mergeBaselines(raw), images };
 }
 
+const styleKey = (ch) => `${ch.font.rawName}|${ch.size.toFixed(1)}|${ch.color.join()}`;
+
+/** The style most of a line's letters have (a line starting with a bold word is still body text). */
+function dominantStyle(chars) {
+  const counts = new Map();
+  for (const ch of chars) if (ch.c.trim()) counts.set(styleKey(ch), (counts.get(styleKey(ch)) ?? 0) + 1);
+  const best = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return chars.find((ch) => styleKey(ch) === best) ?? chars[0];
+}
+
 function finishLine(l) {
-  const styled = l.chars.find((ch) => ch.c.trim()) ?? l.chars[0];
+  const styled = dominantStyle(l.chars);
   const start = l.chars.findIndex((ch) => ch.c.trim());
   const end = l.chars.findIndex((ch, i) => i > start && !ch.c.trim());
   const lastOfWord = start === -1 ? null : l.chars[(end === -1 ? l.chars.length : end) - 1];
@@ -73,6 +83,7 @@ function finishLine(l) {
     ...l,
     firstWordEnd: lastOfWord ? lastOfWord.quad[2] : l.bbox[0], // right edge of the first word (none: blank line)
     text: l.chars.map((ch) => ch.c).join(""),
+    charStyles: l.chars.flatMap((ch) => Array(ch.c.length).fill(ch)), // one per UTF-16 unit of text
     size: styled.size, font: styled.font, color: styled.color,
     left: l.chars[0].origin[0], baseline: l.chars[0].origin[1],
     horizontal: l.wmode === 0 && Math.abs(l.dir[1]) < 0.01 && l.dir[0] > 0,
@@ -93,6 +104,7 @@ function mergeBaselines(lines) {
         ...prev,
         text: prev.text + space + l.text,
         chars: [...prev.chars, ...l.chars],
+        charStyles: [...prev.charStyles, ...(space ? [prev.charStyles.at(-1)] : []), ...l.charStyles],
         bbox: [prev.bbox[0], Math.min(prev.bbox[1], l.bbox[1]), l.bbox[2], Math.max(prev.bbox[3], l.bbox[3])],
       };
     } else {
@@ -154,17 +166,40 @@ function collectParagraph(lines, clicked, bounds) {
 /** Join a paragraph's lines into one string; returns the text and where each line starts in it. */
 function joinLines(para) {
   let text = "";
+  let charStyles = [];
   const starts = [];
   para.forEach((l, i) => {
-    let piece = l.text.replace(/\s+$/, "");
-    if (i > 0) {
-      piece = piece.replace(/^\s+/, "");
-      if (!text.endsWith("-")) text += " "; // keep hyphenated words joined as they were
+    const lead = i > 0 ? l.text.length - l.text.replace(/^\s+/, "").length : 0;
+    const piece = l.text.replace(/\s+$/, "").slice(lead);
+    if (i > 0 && !text.endsWith("-")) { // keep hyphenated words joined as they were
+      text += " ";
+      charStyles = [...charStyles, charStyles.at(-1)];
     }
-    starts.push(text.length - (i > 0 ? l.text.length - l.text.replace(/^\s+/, "").length : 0));
+    starts.push(text.length - lead);
     text += piece;
+    charStyles = [...charStyles, ...l.charStyles.slice(lead, lead + piece.length)];
   });
-  return { text, starts };
+  return { text, starts, ...styleRuns(text, charStyles) };
+}
+
+/** Split text into runs of one style: {runs: [{text, style}], styles: [{font, size, color}]}. */
+function styleRuns(text, charStyles) {
+  const styles = [];
+  const keys = [];
+  const runs = [];
+  [...text].reduce((i, ch) => {
+    const key = styleKey(charStyles[i]);
+    let style = keys.indexOf(key);
+    if (style === -1) {
+      const { font, size, color } = charStyles[i];
+      style = styles.push({ font, size, color }) - 1;
+      keys.push(key);
+    }
+    if (runs.at(-1)?.style === style) runs.at(-1).text += ch;
+    else runs.push({ text: ch, style });
+    return i + ch.length;
+  }, 0);
+  return { runs, styles };
 }
 
 /**
@@ -294,7 +329,7 @@ export function findParagraph(bytes, pageIndex, point) {
 
     const bounds = page.getBounds();
     const para = collectParagraph(lines, clicked, bounds);
-    const { text, starts } = joinLines(para);
+    const { text, starts, runs, styles } = joinLines(para);
     const [dx, dy] = clicked.dir;
     const along = ([x, y]) => x * dx + y * dy;
     const caretInLine = clicked.chars.filter((ch) => {
@@ -335,6 +370,8 @@ export function findParagraph(bytes, pageIndex, point) {
       size: first.size,
       color: first.color,
       font: first.font,
+      runs, // [{text, style}] covering `text`; style indexes `styles`
+      styles, // [{font, size, color}]
     };
   } finally {
     pdf.destroy();
@@ -459,23 +496,93 @@ async function pickFonts(doc, fontFile, style, text) {
 
 // ---------- layout ----------
 
-/** Greedy word wrap; `maxWidth(i)` is the room on line i. Hard line breaks are kept. */
-export function wrapText(text, maxWidth, width) {
+/**
+ * Greedy word wrap over ranges of `text`: `maxWidth(i)` is the room on line i and
+ * `widthOf(start, end)` measures text.slice(start, end). Hard line breaks are kept.
+ * @returns {[number, number][]} each line's [start, end)
+ */
+export function wrapRanges(text, maxWidth, widthOf) {
   const lines = [];
+  let blockStart = 0;
   for (const block of text.split("\n")) {
-    let line = "";
-    for (const word of block.split(/ +/)) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && width(candidate) > maxWidth(lines.length)) {
+    let line = null; // [start, end) of the line being filled
+    for (const word of block.matchAll(/[^ ]+/g)) {
+      const [start, end] = [blockStart + word.index, blockStart + word.index + word[0].length];
+      if (line && widthOf(line[0], end) > maxWidth(lines.length)) {
         lines.push(line);
-        line = word;
+        line = [start, end];
       } else {
-        line = candidate;
+        line = [line?.[0] ?? start, end];
       }
     }
-    lines.push(line);
+    lines.push(line ?? [blockStart, blockStart]);
+    blockStart += block.length + 1;
   }
   return lines;
+}
+
+/** Greedy word wrap of plain text; `width(s)` measures a string. */
+export function wrapText(text, maxWidth, width) {
+  return wrapRanges(text, maxWidth, (a, b) => width(text.slice(a, b))).map(([a, b]) => text.slice(a, b));
+}
+
+// ---------- styles of the new text ----------
+
+const fontStem = (name) => name.split(/[-,]/)[0]; // "Carlito-Bold" -> "Carlito"
+
+/** BaseFont names of the fonts the page uses. */
+function pageFontNames(page) {
+  const fonts = page.getObject().getInheritable("Resources").get("Font");
+  const names = [];
+  if (fonts.isDictionary()) fonts.forEach((ref) => { const n = ref.resolve().get("BaseFont"); if (n.isName()) names.push(n.asName()); });
+  return names;
+}
+
+/**
+ * Give every run a concrete style. A run's bold/italic flags (from the editor) override its
+ * style's: the paragraph's own style with those flags if it has one, else that font's bold/italic
+ * sibling from the page, else a standard font with those flags (rawName null).
+ */
+function resolveStyles(para, runs, fontNames) {
+  const base = Math.max(0, para.styles.findIndex((s) => s.font.rawName === para.font.rawName));
+  const siblings = fontNames.map((n) => describeFont(n, false, false, false));
+  return runs.map(({ text, style = base, bold, italic }) => {
+    const own = para.styles[style] ?? para.styles[base];
+    const want = { bold: bold ?? own.font.bold, italic: italic ?? own.font.italic };
+    const fits = (f) => f.bold === want.bold && f.italic === want.italic;
+    if (fits(own.font)) return { text, style: own };
+    const same = para.styles.find((s) => fits(s.font) && s.size === own.size && s.color.join() === own.color.join()
+      && fontStem(s.font.name) === fontStem(own.font.name));
+    if (same) return { text, style: same };
+    const sibling = siblings.find((f) => fits(f) && fontStem(f.name) === fontStem(own.font.name));
+    return { text, style: { ...own, font: sibling ?? { ...own.font, ...want, rawName: null } } };
+  });
+}
+
+/** Join runs into one string, dropping \r and spaces at line ends; `styleAt[i]` is the style of unit i. */
+function flatten(runs) {
+  const units = runs.flatMap(({ text, style }) => text.replace(/\r/g, "").split("").map((u) => ({ u, style })));
+  const kept = [];
+  let atLineEnd = true; // walking backwards: nothing but spaces since the last line break
+  for (let i = units.length - 1; i >= 0; i--) {
+    const { u } = units[i];
+    if (u === "\n") atLineEnd = true;
+    else if (u === " " || u === "\t") { if (atLineEnd) continue; }
+    else atLineEnd = false;
+    kept.push(units[i]);
+  }
+  kept.reverse();
+  return { text: kept.map((x) => x.u).join(""), styleAt: kept.map((x) => x.style) };
+}
+
+/** Consecutive pieces of text[start, end) that share a style: [{text, style}]. */
+function segments(text, styleAt, start, end) {
+  const out = [];
+  for (let i = start; i < end; i++) {
+    if (out.at(-1)?.style === styleAt[i]) out.at(-1).text += text[i];
+    else out.push({ text: text[i], style: styleAt[i] });
+  }
+  return out;
 }
 
 function pdfColor(c) {
@@ -515,25 +622,33 @@ function splitBlock(bytes, pageIndex, rect) {
 }
 
 /**
- * Replace the paragraph `para` (from findParagraph on the same bytes) with `text`.
- * When it grows, what's below it in its column moves down by the added lines (`pushed`, in
+ * Replace the paragraph `para` (from findParagraph on the same bytes) with `content`: plain
+ * text (written in the paragraph's main style), or runs [{text, style?, bold?, italic?}] where
+ * `style` indexes para.styles and bold/italic override it. When it grows, what's below it in its column moves down by the added lines (`pushed`, in
  * points). If that would push content off the page and the text doesn't fit the gap below,
  * it isn't written while allowOverflow is false: bytes is null and overflowLines says how
  * many lines too many it needs.
  * @returns {Promise<{bytes: Uint8Array|null, lines: number, usedOwnFont: boolean,
  *   fallbackChars: string[], overflows: boolean, overflowLines: number, pushed: number}>}
  */
-export async function replaceParagraph(bytes, para, text, { allowOverflow = true } = {}) {
-  // 1. remove only the old letters, and keep a copy of the paragraph's embedded font
+export async function replaceParagraph(bytes, para, content, { allowOverflow = true } = {}) {
+  // 1. remove only the old letters; resolve the new text's styles and copy their embedded fonts
   const pdf = openPdf(bytes);
-  let removed, fontFile;
+  let removed, text, styleAt, styles, fontFiles;
   try {
     const page = pdf.loadPage(para.pageIndex);
-    try {
-      fontFile = embeddedFontFile(page, para.font.rawName);
-    } catch {
-      fontFile = null; // malformed font entry: a standard font is the designed fallback
-    }
+    let names = [];
+    try { names = pageFontNames(page); } catch { /* malformed resources: no siblings, standard fonts */ }
+    const runs = resolveStyles(para, typeof content === "string" ? [{ text: content }] : content, names);
+    ({ text, styleAt } = flatten(runs));
+    styles = [...new Set(styleAt)];
+    fontFiles = styles.map((s) => {
+      try {
+        return s.font.rawName ? embeddedFontFile(page, s.font.rawName) : null;
+      } catch {
+        return null; // malformed font entry: a standard font is the designed fallback
+      }
+    });
     for (const r of para.removeRects) page.createAnnotation("Redact").setRect(r);
     page.applyRedactions(false, PDFPage.REDACT_IMAGE_NONE, PDFPage.REDACT_LINE_ART_NONE,
       PDFPage.REDACT_TEXT_REMOVE);
@@ -541,25 +656,35 @@ export async function replaceParagraph(bytes, para, text, { allowOverflow = true
   } finally {
     pdf.destroy();
   }
-  const clean = text.replace(/\r/g, "").replace(/[ \t]+$/gm, "");
-  if (!clean.trim()) {
+  if (!text.trim()) {
     return { bytes: removed, lines: 0, usedOwnFont: false, fallbackChars: [], overflows: false, overflowLines: 0, pushed: 0 };
   }
 
-  // 2. wrap the new text into the paragraph's column
+  // 2. wrap the new text into the paragraph's column, measuring each style in its own font
   const { firstPage, firstLeft, bodyLeft, right, leading, dir, spaceBelow, below } = para.layout;
   const layOut = async (source) => {
     const doc = await PDFDocument.load(source);
-    const fonts = await pickFonts(doc, fontFile, para.font, clean);
+    const fonts = new Map();
+    for (const [i, s] of styles.entries()) {
+      const own = [...text].filter((_, j) => styleAt[j] === s).join(""); // shortcut: units, fine for BMP text
+      fonts.set(s, await pickFonts(doc, fontFiles[i], s.font, own));
+    }
+    const widthOf = (a, b) => segments(text, styleAt, a, b)
+      .reduce((w, seg) => w + fonts.get(seg.style).width(seg.text, seg.style.size), 0);
     const room = (i) => right - (i === 0 ? firstLeft : bodyLeft);
-    return { doc, fonts, lines: wrapText(clean, room, (s) => fonts.width(s, para.size)) };
+    return { doc, fonts, lines: wrapRanges(text, room, widthOf) };
   };
   let { doc, fonts, lines } = await layOut(removed);
   const grownBy = (lines.length - para.lineCount) * leading;
   const pushed = grownBy > 0 && below && below.bottom + grownBy <= below.limit ? grownBy : 0;
   const overflows = !pushed && grownBy > spaceBelow;
   const overflowLines = overflows ? Math.ceil((grownBy - spaceBelow) / leading) : 0;
-  const summary = { lines: lines.length, usedOwnFont: fonts.usedOwn, fallbackChars: fonts.usedFallback, overflows, overflowLines, pushed };
+  const summary = {
+    lines: lines.length,
+    usedOwnFont: [...fonts.values()].every((f) => f.usedOwn),
+    fallbackChars: [...new Set([...fonts.values()].flatMap((f) => f.usedFallback))],
+    overflows, overflowLines, pushed,
+  };
   if (overflows && !allowOverflow) return { ...summary, bytes: null };
 
   // 3. make room: cut out the block below and draw it again lower, as real (searchable) content
@@ -576,19 +701,21 @@ export async function replaceParagraph(bytes, para, text, { allowOverflow = true
 
   // 4. write the new text line by line
   const page = doc.getPage(para.pageIndex);
-  const color = pdfColor(para.color);
   const [dx, dy] = dir;
   const [nx, ny] = [-dy, dx]; // from one line to the next, in page space
-  lines.forEach((line, i) => {
+  lines.forEach(([start, end], i) => {
     const shift = i === 0 ? 0 : bodyLeft - firstLeft;
     let x = firstPage[0] + shift * dx + i * leading * nx;
     let y = firstPage[1] + shift * dy + i * leading * ny;
-    for (const run of fonts.runs(line)) {
-      const [ux, uy] = apply(para.toUser, [x, y]);
-      page.drawText(run.text, { x: ux, y: uy, size: para.size, font: run.font, color, rotate: degrees(para.angle) });
-      const w = run.font.widthOfTextAtSize(run.text, para.size);
-      x += w * dx;
-      y += w * dy;
+    for (const { text: piece, style } of segments(text, styleAt, start, end)) {
+      const color = pdfColor(style.color);
+      for (const run of fonts.get(style).runs(piece)) {
+        const [ux, uy] = apply(para.toUser, [x, y]);
+        page.drawText(run.text, { x: ux, y: uy, size: style.size, font: run.font, color, rotate: degrees(para.angle) });
+        const w = run.font.widthOfTextAtSize(run.text, style.size);
+        x += w * dx;
+        y += w * dy;
+      }
     }
   });
   return { ...summary, bytes: await doc.save() };
