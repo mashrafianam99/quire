@@ -199,6 +199,34 @@ test("pushes the content below down when the paragraph grows, and leaves other c
   assert.ok(near(side[0].y, 600, 0.5) && near(side[0].x, 420), "the other column stays put");
 });
 
+test("a running footer stays where it is; content is pushed down only as far as the footer", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const width = (t) => helv.widthOfTextAtSize(t, 12);
+  wrapText(BODY, () => COLUMN, width).forEach((t, i) => page.drawText(t, { x: 72, y: 120 - i * 15, size: 12, font: helv }));
+  page.drawText("Last body line.", { x: 72, y: 70, size: 12, font: helv }); // room for one more line above the footer
+  page.drawText("Prepared by someone", { x: 50, y: 20, size: 9, font: helv });
+  page.drawText("Page 1 of 9", { x: 500, y: 20, size: 9, font: helv });
+  const bytes = await doc.save();
+  const para = findParagraph(bytes, 0, [150, 123]);
+
+  let oneLineMore = para.text;
+  while (wrapText(oneLineMore, () => COLUMN, width).length === para.lineCount) oneLineMore += " More words.";
+  const grown = await replaceParagraph(bytes, para, oneLineMore, { allowOverflow: false });
+  assert.ok(grown.pushed > 0, "pushed above the footer");
+  const lines = linesOf(grown.bytes);
+  for (const footer of ["Prepared by someone", "Page 1 of 9"]) {
+    const found = lines.filter((l) => l.text.trim() === footer);
+    assert.equal(found.length, 1, `${footer} once`);
+    assert.ok(near(found[0].y, 20, 0.5), `${footer} stays at ${found[0].y}`);
+  }
+  assert.ok(lines.some((l) => l.text.trim() === "Last body line." && near(l.y, 70 - grown.pushed, 0.5)));
+
+  const tooMuch = await replaceParagraph(bytes, para, `${para.text} ${para.text}`, { allowOverflow: false });
+  assert.equal(tooMuch.bytes, null, "would run into the footer");
+});
+
 test("refuses growth that would push content off the page, unless told to place it anyway", async () => {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);

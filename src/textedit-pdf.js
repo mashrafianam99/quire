@@ -201,25 +201,74 @@ function spaceBelow(lines, para, pageBounds) {
   return nextTop - last.bbox[3];
 }
 
+const FOOTER_BAND = 0.12; // a running footer sits in the bottom 12% of the page...
+const FOOTER_GAP = 2;     // ...with at least 2 of its line heights of space above it
+
+/** Top of the page's running footer (page number, "Prepared by …"), or null when it has none. */
+function footerTop(lines, [, py0, , py1]) {
+  const bandTop = py1 - (py1 - py0) * FOOTER_BAND;
+  const [lowest, ...rest] = [...lines].sort((a, b) => b.bbox[3] - a.bbox[3]);
+  if (!lowest) return null;
+  let top = lowest.bbox[1];
+  let height = lowest.bbox[3] - lowest.bbox[1];
+  for (const l of rest) {
+    if (top < bandTop) return null; // the bottom cluster reaches up into the body: no footer
+    if (top - l.bbox[3] >= height * FOOTER_GAP) return top;
+    top = Math.min(top, l.bbox[1]);
+    height = Math.max(height, l.bbox[3] - l.bbox[1]);
+  }
+  return null; // the whole page is one cluster
+}
+
 /**
  * The block that has to move down when the paragraph grows: from the paragraph's bottom to the
- * page's bottom, as wide as the gap to any column beside it. Null when nothing is below.
- * `bottom` is the lowest text or image in it.
+ * running footer (or the page's bottom), as wide as the gap to any column beside it. Null when
+ * nothing is below. `bottom` is the lowest text or image in it; `limit` is how low it may go.
  */
-function blockBelow(lines, images, para, [px0, , px1, py1]) {
+function blockBelow(lines, images, para, bounds) {
+  const [px0, , px1, py1] = bounds;
   const top = para.at(-1).bbox[3];
+  const footer = footerTop(lines, bounds);
+  const floor = footer !== null && footer > top ? footer : py1;
   const colLeft = Math.min(...para.map((l) => l.bbox[0]));
   const colRight = Math.max(...para.map((l) => l.bbox[2]));
-  const under = lines.filter((l) => !para.includes(l) && l.bbox[1] >= top);
+  const under = lines.filter((l) => !para.includes(l) && l.bbox[1] >= top && l.bbox[1] < floor);
   const leftOf = under.filter((l) => l.bbox[2] <= colLeft).map((l) => l.bbox[2]);
   const rightOf = under.filter((l) => l.bbox[0] >= colRight).map((l) => l.bbox[0]);
-  const x0 = leftOf.length ? (Math.max(...leftOf) + colLeft) / 2 : px0;
-  const x1 = rightOf.length ? (Math.min(...rightOf) + colRight) / 2 : px1;
+  let x0 = leftOf.length ? (Math.max(...leftOf) + colLeft) / 2 : px0;
+  let x1 = rightOf.length ? (Math.min(...rightOf) + colRight) / 2 : px1;
+  // Widen until no line below crosses a side (a wide line or a table row would be cut in two).
+  for (let widened = true; widened;) {
+    widened = false;
+    for (const { bbox: [a, , c] } of under) {
+      if (a < x0 && c > x0) { x0 = Math.max(px0, a - 1); widened = true; }
+      if (a < x1 && c > x1) { x1 = Math.min(px1, c + 1); widened = true; }
+    }
+  }
   // shortcut: vector drawings aren't measured, so one near the page bottom may be pushed past it
   const content = [...under.map((l) => l.bbox), ...images]
-    .filter(([a, b, c]) => b >= top && a < x1 && c > x0);
+    .filter(([a, b, c]) => b >= top && b < floor && a < x1 && c > x0);
   if (!content.length) return null;
-  return { rect: [x0, top, x1, py1], bottom: Math.max(...content.map((b) => b[3])) };
+  // cut mid-gap, not along the text's edge: decorations reaching just past the paragraph (an accent
+  // bar, an underline) stay whole above the cut instead of a sliver of them moving down
+  // ...but above any line beside the paragraph that reaches across it, so that line moves whole
+  // (repeat: raising the cut can make it cross another line)
+  let cut = (top + Math.min(...content.map((b) => b[1]))) / 2;
+  for (let raised = true; raised;) {
+    raised = false;
+    for (const l of lines) {
+      const [a, b, c, d] = l.bbox;
+      if (!para.includes(l) && b < cut && d > cut && a < x1 && c > x0) {
+        cut = b;
+        raised = true;
+      }
+    }
+  }
+  return {
+    rect: [x0, cut, x1, floor],
+    bottom: Math.max(...content.map((b) => b[3])),
+    limit: floor === py1 ? py1 : floor - para.at(-1).size, // keep a line's space above the footer
+  };
 }
 
 // ---------- public: find ----------
@@ -331,6 +380,18 @@ const tolerantFontkit = {
       try { ok = font[key] !== undefined; } catch { ok = false; }
       if (!ok) Object.defineProperty(font, key, { value: fallback(font) });
     }
+    // pdf-lib measures every glyph when embedding a whole font; in a subset, the cut-away ones
+    // throw. Their width comes straight from the width table instead (they are never drawn).
+    const getGlyph = font.getGlyph.bind(font);
+    font.getGlyph = (id, codePoints) => {
+      const glyph = getGlyph(id, codePoints);
+      try { void glyph.advanceWidth; } catch {
+        let width = 0;
+        try { const m = font.hmtx.metrics; width = m.get(Math.min(id, m.length - 1))?.advance ?? 0; } catch { /* 0 */ }
+        Object.defineProperty(glyph, "advanceWidth", { value: width });
+      }
+      return glyph;
+    };
     return font;
   },
 };
@@ -365,6 +426,12 @@ async function pickFonts(doc, fontFile, style, text) {
   }
   const ownSet = new Set(own?.getCharacterSet() ?? []);
   const has = (set, ch) => set.has(ch.codePointAt(0));
+  // A subset font may map a letter to a glyph whose outline was cut away: draw that one in the fallback.
+  const probe = own ? tolerantFontkit.create(fontFile) : null;
+  for (const ch of new Set(text)) {
+    if (!has(ownSet, ch)) continue;
+    try { void probe.glyphForCodePoint(ch.codePointAt(0)).cbox; } catch { ownSet.delete(ch.codePointAt(0)); }
+  }
   const needsFallback = [...text].some((ch) => !has(ownSet, ch)); // spaces too: a subset may lack them
   const fallback = needsFallback || !own ? await doc.embedFont(standardFont(style)) : null;
   const fallbackSet = new Set(fallback?.getCharacterSet() ?? []);
@@ -430,14 +497,16 @@ function redact(pdf, pageIndex, rects) {
 
 /** Split a page in two: `kept` without the block `rect`, `block` with only what's inside it. */
 function splitBlock(bytes, pageIndex, rect) {
-  const [x0, y0, x1] = rect;
+  const [x0, y0, x1, y1] = rect;
   const kept = openPdf(bytes);
   const block = openPdf(bytes);
   try {
     const [px0, py0, px1, py1] = block.loadPage(pageIndex).getBounds();
     return {
       kept: redact(kept, pageIndex, [rect]),
-      block: redact(block, pageIndex, [[px0, py0, px1, y0], [px0, y0, x0, py1], [x1, y0, px1, py1]]),
+      // everything outside the block, so its clipped-away parts (e.g. the footer) aren't copied as hidden text
+      block: redact(block, pageIndex,
+        [[px0, py0, px1, y0], [px0, y0, x0, py1], [x1, y0, px1, py1], [x0, y1, x1, py1]]),
     };
   } finally {
     kept.destroy();
@@ -487,7 +556,7 @@ export async function replaceParagraph(bytes, para, text, { allowOverflow = true
   };
   let { doc, fonts, lines } = await layOut(removed);
   const grownBy = (lines.length - para.lineCount) * leading;
-  const pushed = grownBy > 0 && below && below.bottom + grownBy <= below.rect[3] ? grownBy : 0;
+  const pushed = grownBy > 0 && below && below.bottom + grownBy <= below.limit ? grownBy : 0;
   const overflows = !pushed && grownBy > spaceBelow;
   const overflowLines = overflows ? Math.ceil((grownBy - spaceBelow) / leading) : 0;
   const summary = { lines: lines.length, usedOwnFont: fonts.usedOwn, fallbackChars: fonts.usedFallback, overflows, overflowLines, pushed };

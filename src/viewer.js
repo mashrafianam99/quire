@@ -72,6 +72,11 @@ export function createViewer(container, { askPassword }) {
     uiManager = e.uiManager;
     setTimeout(applyTool, 0); // let pdf.js finish setDocument first
   });
+  // whether pdf.js has annotation steps of its own to undo/redo for the open document
+  let editorHistory = { undo: false, redo: false };
+  eventBus.on("editingstateschanged", ({ details }) => {
+    editorHistory = { undo: details.hasSomethingToUndo ?? editorHistory.undo, redo: details.hasSomethingToRedo ?? editorHistory.redo };
+  });
   eventBus.on("annotationeditormodechanged", ({ mode }) => {
     if (mode !== AnnotationEditorType.NONE) for (const [t, v] of styles) sendStyle(t, v);
   });
@@ -124,6 +129,7 @@ export function createViewer(container, { askPassword }) {
     const prev = doc;
     doc = next;
     uiManager = null;
+    editorHistory = { undo: false, redo: false };
     modified = false;
     next.annotationStorage.onSetModified = () => { modified = true; };
     next.annotationStorage.onResetModified = () => { modified = false; };
@@ -170,6 +176,8 @@ export function createViewer(container, { askPassword }) {
       await enterMode(AnnotationEditorType.STAMP);
       await uiManager.currentLayer.pasteEditor({ mode: AnnotationEditorType.STAMP }, { bitmapFile: file });
     },
+    canUndo: () => editorHistory.undo,
+    canRedo: () => editorHistory.redo,
     undo: () => eventBus.dispatch("editingaction", { source: viewer, name: "undo" }),
     redo: () => eventBus.dispatch("editingaction", { source: viewer, name: "redo" }),
     find: (query, { again = false, previous = false } = {}) =>

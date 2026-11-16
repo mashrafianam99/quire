@@ -19,7 +19,7 @@ const pageInput = $("#page-num");
 const pageTotal = $("#page-total");
 const zoomLabel = $("#zoom-label");
 
-/** @type {{id:number, name:string, bytes:Uint8Array, dirty:boolean}[]} */
+/** @type {{id:number, name:string, bytes:Uint8Array, dirty:boolean, undoStack?:Uint8Array[], redoStack?:Uint8Array[]}[]} */
 const tabs = [];
 let active = null; // the tab whose document the viewer shows
 let nextId = 1;
@@ -182,13 +182,41 @@ async function saveBytes(bytes, name) {
   return true;
 }
 
+// ---------- document history (undo/redo for changes that rewrite the file) ----------
+const HISTORY_LIMIT = 20; // whole-file snapshots, so keep memory bounded on big PDFs
+
+/** Give a tab new document bytes, remembering `before` so Undo can bring it back. */
+function changeBytes(tab, before, after) {
+  tab.undoStack = [...(tab.undoStack ?? []), before].slice(-HISTORY_LIMIT);
+  tab.redoStack = [];
+  tab.bytes = after;
+  tab.dirty = true;
+}
+
+/** Undo (back) or redo: pdf.js's own annotation steps first, then whole-document changes. */
+const stepHistory = (back) => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  const [from, to] = back ? ["undoStack", "redoStack"] : ["redoStack", "undoStack"];
+  if ((back ? viewer.canUndo() : viewer.canRedo()) || !tab[from]?.length) {
+    if (back) viewer.undo(); else viewer.redo();
+    return;
+  }
+  const wasEditingText = textEditor.active;
+  tab[to] = [...(tab[to] ?? []), await viewer.currentBytes(tab.bytes)];
+  tab.bytes = tab[from].at(-1);
+  tab[from] = tab[from].slice(0, -1);
+  tab.dirty = true;
+  await activateNow(tab, { keepView: true });
+  if (wasEditingText) textEditor.start(); // reopening ended the mode
+});
+
 // ---------- page operations ----------
 const editPages = (op) => serial(async () => {
   if (!active) return;
   const tab = active;
   const bytes = await viewer.currentBytes(tab.bytes);
-  tab.bytes = await op(bytes);
-  tab.dirty = true;
+  changeBytes(tab, bytes, await op(bytes));
   await activateNow(tab, { keepView: true });
 });
 
@@ -295,8 +323,7 @@ const recognizeText = () => serial(async () => {
   const bytes = await viewer.currentBytes(tab.bytes);
   const result = await ocrPdf(bytes, (n, total) => toast(`Recognizing text… page ${n} of ${total}`));
   if (!result.bytes) { toast("This PDF already has selectable text on every page."); return; }
-  tab.bytes = result.bytes;
-  tab.dirty = true;
+  changeBytes(tab, bytes, result.bytes);
   await activateNow(tab, { keepView: true });
   const plural = (n) => `${n} page${n === 1 ? "" : "s"}`;
   toast(`Text recognized on ${plural(result.recognized)}.`
@@ -328,8 +355,8 @@ const applyRedaction = () => serial(async () => {
   const tab = active;
   toast("Removing marked content…");
   const { redactPdf } = await import("./redact-pdf.js"); // MuPDF is large; load only when used
-  tab.bytes = redactPdf(await viewer.currentBytes(tab.bytes), marks);
-  tab.dirty = true;
+  const before = await viewer.currentBytes(tab.bytes);
+  changeBytes(tab, before, redactPdf(before, marks));
   await activateNow(tab, { keepView: true });
   toast(`Permanently removed ${marks.length} area${marks.length === 1 ? "" : "s"}. Save to keep the result.`);
 });
@@ -358,8 +385,7 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
         + "Shorten it, or press Enter again to place it anyway (it will overlap the text below).");
       return { overflowLines: n };
     }
-    para.tab.bytes = result.bytes;
-    para.tab.dirty = true;
+    changeBytes(para.tab, para.bytes, result.bytes);
     await activateNow(para.tab, { keepView: true });
     textEditor.start(); // reopening the document ended the mode; stay in it for the next paragraph
     const notes = [];
@@ -431,8 +457,8 @@ imageInput.onchange = () => {
   imageInput.value = "";
   if (file) serial(() => viewer.addImage(file));
 };
-$("#undo").onclick = () => viewer.undo();
-$("#redo").onclick = () => viewer.redo();
+$("#undo").onclick = () => stepHistory(true);
+$("#redo").onclick = () => stepHistory(false);
 $("#zoom-in").onclick = () => viewer.zoomIn();
 $("#zoom-out").onclick = () => viewer.zoomOut();
 $("#zoom-label").onclick = () => viewer.fitWidth();
@@ -450,6 +476,14 @@ searchInput.onkeydown = (e) => {
 
 document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
+  const typing = e.target.matches?.("input, textarea") || e.target.isContentEditable;
+  const key = e.key.toLowerCase();
+  if (mod && !typing && (key === "z" || key === "y")) {
+    e.preventDefault();
+    e.stopPropagation(); // ours alone: pdf.js's own Ctrl+Z on window would undo twice
+    stepHistory(key === "z" && !e.shiftKey);
+    return;
+  }
   if (mod && e.key === "o") { e.preventDefault(); openInput.click(); }
   else if (mod && e.key === "s") { e.preventDefault(); saveActive(); }
   else if (mod && e.key === "p") { e.preventDefault(); printActive(); }
