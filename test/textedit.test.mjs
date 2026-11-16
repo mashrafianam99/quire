@@ -113,7 +113,7 @@ const ITEM = "• First item that is long enough to wrap onto a second line of t
 const COLUMN = 300;
 
 /** A heading, a wrapped paragraph, a short paragraph, and a wrapped list item, like a word processor lays them out. */
-async function paragraphPdf({ nextGap = 40 } = {}) {
+async function paragraphPdf({ nextGap = 40, sideNote = false } = {}) {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -127,6 +127,7 @@ async function paragraphPdf({ nextGap = 40 } = {}) {
   page.drawText("Next paragraph.", { x: 72, y: nextY - 15, size: 12, font: helv });
   const item = wrapText(ITEM, (i) => (i ? COLUMN - 10 : COLUMN), width);
   item.forEach((t, i) => page.drawText(t, { x: i ? 82 : 72, y: nextY - 45 - i * 15, size: 12, font: helv }));
+  if (sideNote) page.drawText("Side column.", { x: 420, y: 600, size: 12, font: helv });
   return { bytes: await doc.save(), body, item, nextY };
 }
 
@@ -176,9 +177,39 @@ test("re-wraps the edited paragraph inside its column and leaves the rest alone"
   assert.ok(lines.some((l) => l.text === "Short closing line."));
 });
 
-test("refuses text that would run into what's below, unless told to place it anyway", async () => {
-  const { bytes } = await paragraphPdf({ nextGap: 20 });
+test("pushes the content below down when the paragraph grows, and leaves other columns alone", async () => {
+  const { bytes, nextY } = await paragraphPdf({ nextGap: 20, sideNote: true });
   const para = findParagraph(bytes, 0, [150, 678]);
+  const longer = `${para.text} ${para.text}`;
+
+  const result = await replaceParagraph(bytes, para, longer, { allowOverflow: false });
+
+  assert.ok(result.bytes, "placed without asking");
+  assert.equal(result.overflows, false);
+  const added = result.lines - para.lineCount;
+  assert.ok(near(result.pushed, added * 15, 0.5), `pushed ${result.pushed}`);
+  const lines = linesOf(result.bytes);
+  const closing = lines.filter((l) => l.text.trim() === "Short closing line.");
+  assert.equal(closing.length, 1, "moved, not copied");
+  assert.ok(near(closing[0].y, nextY - result.pushed, 0.5), `closing line at ${closing[0].y}`);
+  assert.ok(lines.some((l) => l.text.startsWith("•") && near(l.y, nextY - 45 - result.pushed, 0.5)), "list moved too");
+  assert.ok(lines.some((l) => l.text === "A bold heading" && near(l.y, 720, 0.5)), "heading above stays");
+  const side = lines.filter((l) => l.text.trim() === "Side column.");
+  assert.equal(side.length, 1);
+  assert.ok(near(side[0].y, 600, 0.5) && near(side[0].x, 420), "the other column stays put");
+});
+
+test("refuses growth that would push content off the page, unless told to place it anyway", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const width = (t) => helv.widthOfTextAtSize(t, 12);
+  const body = wrapText(BODY, () => COLUMN, width);
+  const top = 50 + (body.length - 1) * 15; // last line 30pt above a footer near the page edge
+  body.forEach((t, i) => page.drawText(t, { x: 72, y: top - i * 15, size: 12, font: helv }));
+  page.drawText("Footer at the very bottom.", { x: 72, y: 20, size: 12, font: helv });
+  const bytes = await doc.save();
+  const para = findParagraph(bytes, 0, [150, top + 3]);
   const longer = `${para.text} ${para.text}`;
 
   const refused = await replaceParagraph(bytes, para, longer, { allowOverflow: false });
@@ -187,6 +218,7 @@ test("refuses text that would run into what's below, unless told to place it any
 
   const forced = await replaceParagraph(bytes, para, longer);
   assert.equal(forced.overflows, true);
+  assert.equal(forced.pushed, 0);
   assert.ok(forced.bytes);
 });
 

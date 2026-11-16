@@ -354,7 +354,7 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
     const result = await (await loadTextEdit()).replaceParagraph(para.bytes, para, text, { allowOverflow: force });
     if (!result.bytes) {
       const n = result.overflowLines;
-      toast(`This needs about ${n} more line${n === 1 ? "" : "s"} than there's room for. `
+      toast(`This needs about ${n} more line${n === 1 ? "" : "s"} than there's room for on this page. `
         + "Shorten it, or press Enter again to place it anyway (it will overlap the text below).");
       return { overflowLines: n };
     }
