@@ -25,6 +25,8 @@ npm run build    # static build in dist/
 - Pages sidebar: rotate, delete, extract to a new tab, drag to reorder
 - Combine files: append other PDFs to the current one
 - Recognize text (OCR): makes scanned pages searchable, fully offline (Tesseract)
+- Word → PDF: open (or combine) a .docx and it is converted on the device, with real selectable text: styles, lists, pictures, tables (borders, shading, merged cells), page breaks, and the header/footer with page numbers
+- Compress: drops unused/duplicate objects and recompresses streams; images over 2000 px are reduced (photos as JPEG, others stay lossless). Undoable; never makes the file bigger
 - Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one). When a paragraph grows, the content below it in its column moves down to make room (other columns stay put); when it shrinks, that content moves back up to close the gap. Text that would push content off the page is held back until you confirm
 - Redact: drag boxes, Apply — the text, images and drawings under them are permanently deleted from the file (MuPDF)
 - Zoom with Ctrl+wheel or touchpad pinch
@@ -39,6 +41,8 @@ npm run build    # static build in dist/
 | `src/thumbs.js` | Lazy thumbnail sidebar with page actions and drag reorder |
 | `src/ocr.js` | Offline OCR: Tesseract words laid back as invisible text |
 | `src/redact.js`, `src/redact-pdf.js` | Redaction marks UI; MuPDF removal — unit-tested |
+| `src/compress-pdf.js` | MuPDF compression: image downsampling + compact save — unit-tested |
+| `src/docx.js`, `src/convert.js` | Word (.docx) → XHTML (own zip + XML reader, no dependencies); MuPDF lays it out, pdf-lib stamps header/footer — unit-tested |
 | `src/textedit.js`, `src/textedit-pdf.js` | In-place line editor; MuPDF line lookup/removal + pdf-lib rewrite — unit-tested |
 | `src/main.js` | Tabs, files, toolbar and keyboard wiring |
 
@@ -48,7 +52,7 @@ npm run build    # static build in dist/
 |---|---|---|
 | [pdf.js](https://github.com/mozilla/pdf.js) | Apache-2.0 | Rendering, text, search, forms, annotations |
 | [pdf-lib](https://github.com/Hopding/pdf-lib) + [fontkit](https://github.com/Hopding/fontkit) | MIT | Page operations, merging, writing text in embedded fonts |
-| [MuPDF.js](https://github.com/ArtifexSoftware/mupdf.js) | AGPL-3.0 | Redaction, text lookup for editing |
+| [MuPDF.js](https://github.com/ArtifexSoftware/mupdf.js) | AGPL-3.0 | Redaction, text lookup for editing, compression |
 | [tesseract.js](https://github.com/naptha/tesseract.js) | Apache-2.0 | OCR |
 
 ## Roadmap
@@ -56,6 +60,6 @@ npm run build    # static build in dist/
 1. **Desktop shell** — Tauri 2 (needs Rust + MSVC Build Tools) for native open/save and a small installer
 2. **Text editing, next** — flow onto the next page when the page is full, non-Latin scripts (bundled Noto fonts)
 3. **OCR** — more languages, rotated scans
-4. **Conversion** — LibreOffice (Office → PDF), Docling (PDF → Word/Markdown), Ghostscript (PostScript, compression)
+4. **Conversion** — LibreOffice (Office → PDF), Docling (PDF → Word/Markdown), Ghostscript (PostScript)
 5. **Signatures & compliance** — pyHanko (PAdES), veraPDF (PDF/A, PDF/UA)
 6. **Our own** — in-place text editing, accessibility auto-tagging, form designer, compare

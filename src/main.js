@@ -137,14 +137,28 @@ async function closeTabNow(tab) {
 }
 
 // ---------- files ----------
+const isPdf = (f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+const isWord = (f) => /\.docx$/i.test(f.name)
+  || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/** PDFs as they are; Word files converted to PDF (marked `converted`, as they aren't saved yet). */
 async function readFiles(fileList) {
-  const pdfs = [...fileList].filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
-  if (pdfs.length < fileList.length) toast("Only PDF files can be opened.");
-  return Promise.all(pdfs.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+  const usable = [...fileList].filter((f) => isPdf(f) || isWord(f));
+  if (usable.length < fileList.length) toast("Only PDF and Word (.docx) files can be opened.");
+  const read = await Promise.allSettled(usable.map(async (f) => {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    if (isPdf(f)) return { name: f.name, bytes };
+    const { docxToPdf } = await import("./convert.js"); // MuPDF is large; load only when used
+    return { name: f.name.replace(/\.docx$/i, ".pdf"), bytes: await docxToPdf(bytes), converted: true };
+  }));
+  for (const r of read) if (r.status === "rejected") toast(r.reason.message);
+  return read.filter((r) => r.status === "fulfilled").map((r) => r.value);
 }
 
 async function openFiles(fileList) {
-  for (const { name, bytes } of await readFiles(fileList)) serial(() => addTabNow(name, bytes));
+  for (const { name, bytes, converted } of await readFiles(fileList)) {
+    serial(() => addTabNow(name, bytes, { dirty: !!converted }));
+  }
 }
 
 const saveActive = () => serial(async () => {
@@ -330,6 +344,21 @@ const recognizeText = () => serial(async () => {
     + (result.skipped ? ` ${plural(result.skipped)} already had text.` : ""));
 });
 
+const kb = (n) => (n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+const compressDocument = () => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  const { compressPdf } = await import("./compress-pdf.js"); // MuPDF is large; load only when used
+  const bytes = await viewer.currentBytes(tab.bytes);
+  const result = compressPdf(bytes);
+  if (!result.bytes) { toast("This PDF is already as small as Quire can make it."); return; }
+  changeBytes(tab, bytes, result.bytes);
+  await activateNow(tab, { keepView: true });
+  const saved = Math.round((1 - result.after / result.before) * 100);
+  toast(`Compressed ${kb(result.before)} → ${kb(result.after)} (${saved}% smaller). Save to keep it.`);
+});
+
 // ---------- redaction ----------
 const redactBar = $("#redact-bar");
 const redactor = createRedactor(viewer, $("#viewer"), () => {
@@ -446,6 +475,7 @@ $("#combine").onclick = () => combineInput.click();
 $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
+$("#compress").onclick = compressDocument;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
 $("#edit-text").onclick = () => (textEditor.active ? textEditor.stop() : startTextEditing());
