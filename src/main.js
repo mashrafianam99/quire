@@ -172,13 +172,17 @@ const saveActive = () => serial(async () => {
   toast("Saved.");
 });
 
+const PDF_FILE = { description: "PDF document", type: "application/pdf", extension: ".pdf" };
+const WORD_FILE = { description: "Word document", extension: ".docx",
+  type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+
 // shortcut: browser save = download or Chromium's file picker; the Tauri shell will write files directly.
-async function saveBytes(bytes, name) {
+async function saveBytes(bytes, name, file = PDF_FILE) {
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
         suggestedName: name,
-        types: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+        types: [{ description: file.description, accept: { [file.type]: [file.extension] } }],
       });
       const out = await handle.createWritable();
       await out.write(bytes);
@@ -189,7 +193,7 @@ async function saveBytes(bytes, name) {
       throw new Error(`Save failed: ${err.message}`);
     }
   }
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  const url = URL.createObjectURL(new Blob([bytes], { type: file.type }));
   const a = Object.assign(document.createElement("a"), { href: url, download: name });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
@@ -359,6 +363,15 @@ const compressDocument = () => serial(async () => {
   toast(`Compressed ${kb(result.before)} → ${kb(result.after)} (${saved}% smaller). Save to keep it.`);
 });
 
+const exportWord = () => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  toast("Converting to Word…");
+  const { pdfToDocx } = await import("./pdf-to-docx.js"); // MuPDF and docx are large; load only when used
+  const docx = await pdfToDocx(await viewer.currentBytes(tab.bytes));
+  if (await saveBytes(docx, `${baseName(tab.name)}.docx`, WORD_FILE)) toast("Saved as a Word document.");
+});
+
 // ---------- redaction ----------
 const redactBar = $("#redact-bar");
 const redactor = createRedactor(viewer, $("#viewer"), () => {
@@ -476,6 +489,7 @@ $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#compress").onclick = compressDocument;
+$("#to-word").onclick = exportWord;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
 $("#edit-text").onclick = () => (textEditor.active ? textEditor.stop() : startTextEditing());

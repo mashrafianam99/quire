@@ -26,6 +26,7 @@ npm run build    # static build in dist/
 - Combine files: append other PDFs to the current one
 - Recognize text (OCR): makes scanned pages searchable, fully offline (Tesseract)
 - Word → PDF: open (or combine) a .docx and it is converted on the device, with real selectable text: styles, lists, pictures, tables (borders, shading, merged cells), page breaks, and the header/footer with page numbers
+- PDF → Word (To Word): an editable .docx with paragraphs, headings, bold/italic/colours, bullets, real Word tables (grid and row-striped, merged cells, borders, shading), pictures, diagrams as pictures, cover artwork behind the text, page size/margins, and the running header/footer with live page numbers
 - Compress: drops unused/duplicate objects and recompresses streams; images over 2000 px are reduced (photos as JPEG, others stay lossless). Undoable; never makes the file bigger
 - Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one). When a paragraph grows, the content below it in its column moves down to make room (other columns stay put); when it shrinks, that content moves back up to close the gap. Text that would push content off the page is held back until you confirm
 - Redact: drag boxes, Apply — the text, images and drawings under them are permanently deleted from the file (MuPDF)
@@ -43,6 +44,7 @@ npm run build    # static build in dist/
 | `src/redact.js`, `src/redact-pdf.js` | Redaction marks UI; MuPDF removal — unit-tested |
 | `src/compress-pdf.js` | MuPDF compression: image downsampling + compact save — unit-tested |
 | `src/docx.js`, `src/convert.js` | Word (.docx) → XHTML (own zip + XML reader, no dependencies); MuPDF lays it out, pdf-lib stamps header/footer — unit-tested |
+| `src/pdf-layout.js`, `src/pdf-to-docx.js` | PDF → Word: MuPDF reads lines, pictures and drawings (tables rebuilt from cell borders/shading, diagrams pictured); docx writes the Word file — unit-tested |
 | `src/textedit.js`, `src/textedit-pdf.js` | In-place line editor; MuPDF line lookup/removal + pdf-lib rewrite — unit-tested |
 | `src/main.js` | Tabs, files, toolbar and keyboard wiring |
 
@@ -54,12 +56,13 @@ npm run build    # static build in dist/
 | [pdf-lib](https://github.com/Hopding/pdf-lib) + [fontkit](https://github.com/Hopding/fontkit) | MIT | Page operations, merging, writing text in embedded fonts |
 | [MuPDF.js](https://github.com/ArtifexSoftware/mupdf.js) | AGPL-3.0 | Redaction, text lookup for editing, compression |
 | [tesseract.js](https://github.com/naptha/tesseract.js) | Apache-2.0 | OCR |
+| [docx](https://github.com/dolanmiu/docx) | MIT | Writing Word files (PDF → Word) |
 
 ## Roadmap
 
 1. **Desktop shell** — Tauri 2 (needs Rust + MSVC Build Tools) for native open/save and a small installer
 2. **Text editing, next** — flow onto the next page when the page is full, non-Latin scripts (bundled Noto fonts)
 3. **OCR** — more languages, rotated scans
-4. **Conversion** — LibreOffice (Office → PDF), Docling (PDF → Word/Markdown), Ghostscript (PostScript)
+4. **Conversion** — Excel/PowerPoint → PDF, PDF → Markdown, PostScript
 5. **Signatures & compliance** — pyHanko (PAdES), veraPDF (PDF/A, PDF/UA)
 6. **Our own** — in-place text editing, accessibility auto-tagging, form designer, compare
