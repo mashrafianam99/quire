@@ -25,7 +25,7 @@ npm run build    # static build in dist/
 - Pages sidebar: rotate, delete, extract to a new tab, drag to reorder
 - Combine files: append other PDFs to the current one
 - Recognize text (OCR): makes scanned pages searchable, fully offline (Tesseract)
-- Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one). When a paragraph grows, the content below it in its column moves down to make room (other columns stay put). Text that would push content off the page is held back until you confirm
+- Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one). When a paragraph grows, the content below it in its column moves down to make room (other columns stay put); when it shrinks, that content moves back up to close the gap. Text that would push content off the page is held back until you confirm
 - Redact: drag boxes, Apply — the text, images and drawings under them are permanently deleted from the file (MuPDF)
 - Zoom with Ctrl+wheel or touchpad pinch
 - Save keeps annotations and form input (Ctrl+S); warns before closing with unsaved changes
@@ -54,7 +54,7 @@ npm run build    # static build in dist/
 ## Roadmap
 
 1. **Desktop shell** — Tauri 2 (needs Rust + MSVC Build Tools) for native open/save and a small installer
-2. **Text editing, next** — flow onto the next page when the page is full, pull content up when a paragraph shrinks, non-Latin scripts (bundled Noto fonts)
+2. **Text editing, next** — flow onto the next page when the page is full, non-Latin scripts (bundled Noto fonts)
 3. **OCR** — more languages, rotated scans
 4. **Conversion** — LibreOffice (Office → PDF), Docling (PDF → Word/Markdown), Ghostscript (PostScript, compression)
 5. **Signatures & compliance** — pyHanko (PAdES), veraPDF (PDF/A, PDF/UA)

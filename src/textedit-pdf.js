@@ -4,7 +4,8 @@
 // replaceParagraph: MuPDF removes only those letters (images and lines behind stay), then
 //   pdf-lib re-wraps the new text into the paragraph's column, in the document's own embedded
 //   font where it has the letters, and the closest standard font for the ones it lacks.
-//   When the paragraph grows, everything below it in its column is moved down to make room.
+//   When the paragraph grows, everything below it in its column is moved down to make room;
+//   when it shrinks, that is moved up to close the gap.
 import * as mupdf from "mupdf";
 import { PDFDocument, StandardFonts, rgb, cmyk, grayscale, degrees } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
@@ -261,7 +262,7 @@ function footerTop(lines, [, py0, , py1]) {
  * nothing is below. `bottom` is the lowest text or image in it; `limit` is how low it may go.
  */
 function blockBelow(lines, images, para, bounds) {
-  const [px0, , px1, py1] = bounds;
+  const [px0, py0, px1, py1] = bounds;
   const top = para.at(-1).bbox[3];
   const footer = footerTop(lines, bounds);
   const floor = footer !== null && footer > top ? footer : py1;
@@ -299,10 +300,15 @@ function blockBelow(lines, images, para, bounds) {
       }
     }
   }
+  // how high the block may rise when the paragraph shrinks: not into anything above the cut
+  // that isn't the paragraph (a figure or a column beside it)
+  const above = [...lines.filter((l) => !para.includes(l)).map((l) => l.bbox), ...images]
+    .filter(([a, b, c]) => b < cut && a < x1 && c > x0);
   return {
     rect: [x0, cut, x1, floor],
     bottom: Math.max(...content.map((b) => b[3])),
     limit: floor === py1 ? py1 : floor - para.at(-1).size, // keep a line's space above the footer
+    ceiling: Math.max(py0, ...above.map((b) => b[3])),
   };
 }
 
@@ -625,11 +631,12 @@ function splitBlock(bytes, pageIndex, rect) {
  * Replace the paragraph `para` (from findParagraph on the same bytes) with `content`: plain
  * text (written in the paragraph's main style), or runs [{text, style?, bold?, italic?}] where
  * `style` indexes para.styles and bold/italic override it. When it grows, what's below it in its column moves down by the added lines (`pushed`, in
- * points). If that would push content off the page and the text doesn't fit the gap below,
+ * points); when it shrinks, it moves up by the removed lines (`pulled`), but never into
+ * anything beside the paragraph. If growing would push content off the page and the text doesn't fit the gap below,
  * it isn't written while allowOverflow is false: bytes is null and overflowLines says how
  * many lines too many it needs.
  * @returns {Promise<{bytes: Uint8Array|null, lines: number, usedOwnFont: boolean,
- *   fallbackChars: string[], overflows: boolean, overflowLines: number, pushed: number}>}
+ *   fallbackChars: string[], overflows: boolean, overflowLines: number, pushed: number, pulled: number}>}
  */
 export async function replaceParagraph(bytes, para, content, { allowOverflow = true } = {}) {
   // 1. remove only the old letters; resolve the new text's styles and copy their embedded fonts
@@ -657,7 +664,7 @@ export async function replaceParagraph(bytes, para, content, { allowOverflow = t
     pdf.destroy();
   }
   if (!text.trim()) {
-    return { bytes: removed, lines: 0, usedOwnFont: false, fallbackChars: [], overflows: false, overflowLines: 0, pushed: 0 };
+    return { bytes: removed, lines: 0, usedOwnFont: false, fallbackChars: [], overflows: false, overflowLines: 0, pushed: 0, pulled: 0 };
   }
 
   // 2. wrap the new text into the paragraph's column, measuring each style in its own font
@@ -677,26 +684,30 @@ export async function replaceParagraph(bytes, para, content, { allowOverflow = t
   let { doc, fonts, lines } = await layOut(removed);
   const grownBy = (lines.length - para.lineCount) * leading;
   const pushed = grownBy > 0 && below && below.bottom + grownBy <= below.limit ? grownBy : 0;
+  // all or nothing: a part-way pull would leave an odd-sized gap
+  const pulled = grownBy < 0 && below && below.rect[1] + grownBy >= below.ceiling ? -grownBy : 0;
   const overflows = !pushed && grownBy > spaceBelow;
   const overflowLines = overflows ? Math.ceil((grownBy - spaceBelow) / leading) : 0;
   const summary = {
     lines: lines.length,
     usedOwnFont: [...fonts.values()].every((f) => f.usedOwn),
     fallbackChars: [...new Set([...fonts.values()].flatMap((f) => f.usedFallback))],
-    overflows, overflowLines, pushed,
+    overflows, overflowLines, pushed, pulled,
   };
   if (overflows && !allowOverflow) return { ...summary, bytes: null };
 
-  // 3. make room: cut out the block below and draw it again lower, as real (searchable) content
+  // 3. make room (or close the gap): cut out the block below and draw it again lower (or higher),
+  // as real (searchable) content
   // shortcut: links and form fields in the block stay where they were; move annotations too if users hit it
-  if (pushed) {
+  const shift = pushed - pulled; // in page space, + is down
+  if (shift) {
     const { kept, block } = splitBlock(removed, para.pageIndex, below.rect);
     ({ doc, fonts } = await layOut(kept));
     const [l, b, r, t] = Rect.transform(below.rect, para.toUser);
     const source = (await PDFDocument.load(block)).getPage(para.pageIndex);
     const form = await doc.embedPage(source, { left: l, bottom: b, right: r, top: t }, [1, 0, 0, 1, 0, 0]);
-    const m = para.toUser; // the move down in page space (+y), expressed in user space
-    doc.getPage(para.pageIndex).drawPage(form, { x: m[2] * pushed, y: m[3] * pushed });
+    const m = para.toUser; // the move in page space (+y down), expressed in user space
+    doc.getPage(para.pageIndex).drawPage(form, { x: m[2] * shift, y: m[3] * shift });
   }
 
   // 4. write the new text line by line

@@ -199,6 +199,46 @@ test("pushes the content below down when the paragraph grows, and leaves other c
   assert.ok(near(side[0].y, 600, 0.5) && near(side[0].x, 420), "the other column stays put");
 });
 
+test("pulls the content below up when the paragraph shrinks, and leaves other columns alone", async () => {
+  const { bytes, nextY } = await paragraphPdf({ nextGap: 20, sideNote: true });
+  const para = findParagraph(bytes, 0, [150, 678]);
+
+  const result = await replaceParagraph(bytes, para, "Quire edits real PDF text.");
+
+  assert.equal(result.lines, 1);
+  assert.ok(near(result.pulled, (para.lineCount - 1) * 15, 0.5), `pulled ${result.pulled}`);
+  assert.equal(result.pushed, 0);
+  const lines = linesOf(result.bytes);
+  const closing = lines.filter((l) => l.text.trim() === "Short closing line.");
+  assert.equal(closing.length, 1, "moved, not copied");
+  assert.ok(near(closing[0].y, nextY + result.pulled, 0.5), `closing line at ${closing[0].y}`);
+  assert.ok(lines.some((l) => l.text.startsWith("•") && near(l.y, nextY - 45 + result.pulled, 0.5)), "list moved too");
+  assert.ok(lines.some((l) => l.text === "A bold heading" && near(l.y, 720, 0.5)), "heading above stays");
+  const side = lines.filter((l) => l.text.trim() === "Side column.");
+  assert.equal(side.length, 1);
+  assert.ok(near(side[0].y, 600, 0.5) && near(side[0].x, 420), "the other column stays put");
+});
+
+const DOT_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+
+test("doesn't pull content up into a figure standing beside the paragraph", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const body = wrapText(BODY, () => COLUMN, (t) => helv.widthOfTextAtSize(t, 12));
+  body.forEach((t, i) => page.drawText(t, { x: 72, y: 690 - i * 15, size: 12, font: helv }));
+  const last = 690 - (body.length - 1) * 15;
+  page.drawImage(await doc.embedPng(DOT_PNG), { x: 470, y: last - 4, width: 60, height: 40 });
+  page.drawText("Below the paragraph.", { x: 72, y: last - 30, size: 12, font: helv });
+  const bytes = await doc.save();
+  const para = findParagraph(bytes, 0, [150, 678]);
+
+  const result = await replaceParagraph(bytes, para, "Quire edits real PDF text.");
+
+  assert.equal(result.pulled, 0);
+  assert.ok(linesOf(result.bytes).some((l) => l.text.trim() === "Below the paragraph." && near(l.y, last - 30, 0.5)));
+});
+
 test("a running footer stays where it is; content is pushed down only as far as the footer", async () => {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);
