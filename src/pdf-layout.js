@@ -148,6 +148,7 @@ const FIGURE_MIN = 24; // pt; smaller clusters (a lone arrow, a bullet) aren't f
 const FIGURE_ROW_GAP = 24; // pt; figures side by side closer than this are one
 const FIGURE_DPI_SCALE = 2; // figures are pictured at 144 dpi
 const BACKGROUND_SHARE = 0.4; // a figure over this share of the page is background art
+const LABEL_SIZE = 0.8; // a line in print this much smaller than the page's usual is a figure's annotation
 
 const touches = (a, b, gap) => a[0] - gap <= b[2] && b[0] - gap <= a[2] && a[1] - gap <= b[3] && b[1] - gap <= a[3];
 const union = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
@@ -161,7 +162,9 @@ const union = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[
 function figuresOf({ shapes, segments, boxes }, lines, pageArea) {
   const segBox = (s) => (s.dir === "h" ? [s.from, s.at, s.to, s.at] : [s.at, s.from, s.at, s.to]);
   const small = (b) => (b[2] - b[0]) * (b[3] - b[1]) < pageArea * 0.5; // not a page background
-  const holdsText = (b) => lines.some((l) => inside(b, center(l.bbox)));
+  // the pill behind inline code or a badge holds characters of a longer line: text too, not a mark
+  const holdsText = (b) => lines.some((l) => inside(b, center(l.bbox))
+    || l.chars.some((c) => (c.bg || c.badge) && inside(b, [(c.x0 + c.x1) / 2, c.baseline - c.size * 0.3])));
   const labelled = shapes.filter((s) => s.closed && holdsText(s.bbox));
   const parts = [...segments.map(segBox), ...boxes.map((b) => b.rect), ...labelled.map((s) => s.bbox)].filter(small);
   let regions = shapes.filter((s) => !labelled.includes(s) && small(s.bbox)).map((s) => [...s.bbox]);
@@ -188,8 +191,12 @@ function figuresOf({ shapes, segments, boxes }, lines, pageArea) {
     regions = merged;
   }
   const figures = sideBySide(regions.filter((r) => r[2] - r[0] >= FIGURE_MIN && r[3] - r[1] >= FIGURE_MIN));
-  // a label set right against the figure ("Concrete Factories" under a row of classes) is part of it
-  const label = (f, l) => areaOf(f) <= pageArea * BACKGROUND_SHARE && touches(f, l.bbox, FIGURE_JOIN)
+  // a label set right against the figure ("Concrete Factories" under a row of classes) is part of
+  // it; one in small print (an annotation, not a caption or body text) may sit a little further off
+  const sizes = lines.flatMap((l) => l.chars.map((c) => Math.round(c.size))).sort((a, b) => a - b);
+  const body = sizes[Math.floor(sizes.length / 2)] ?? 0;
+  const smallPrint = (l) => Math.max(...l.chars.map((c) => c.size)) < body * LABEL_SIZE;
+  const label = (f, l) => areaOf(f) <= pageArea * BACKGROUND_SHARE && touches(f, l.bbox, smallPrint(l) ? FIGURE_GAP : FIGURE_JOIN)
     && l.bbox[0] >= f[0] - FIGURE_JOIN && l.bbox[2] <= f[2] + FIGURE_JOIN;
   return figures.map((f) => lines.filter((l) => label(f, l)).reduce((r, l) => union(r, l.bbox), f));
 }
@@ -357,13 +364,22 @@ function tablesOf(segments, boxes) {
     const outer = cluster(vs.map((s) => s.at));
     const ys = cluster(hs.map((s) => s.at));
     if (outer.length < 2 || ys.length < 2) continue;
+    // a table the page cuts off (it goes on over the page) has sides running past its last row line
+    const sides = [vs.filter((s) => Math.abs(s.at - outer[0]) <= NEAR), vs.filter((s) => Math.abs(s.at - outer.at(-1)) <= NEAR)];
+    const reach = Math.min(...sides.map((g) => Math.max(...g.map((s) => s.to))));
+    const openBottom = reach - ys.at(-1) > ROW_MIN * 2;
+    if (openBottom) ys.push(reach);
     // a table drawn cell by cell with no column lines: its columns are where the row lines' pieces
-    // meet (on at least two row lines; a rounded frame's sides start a corner's width inside).
+    // meet (on at least two row lines, or on one where two cells' fills meet too: a header bar;
+    // a rounded frame's sides start a corner's width inside).
     // With column lines, pieces meeting over a merged cell are just borders drawn cell by cell.
     const unruled = outer.length === 2;
     const jointOn = (y, x) => unruled && hs.some((s) => Math.abs(s.at - y) <= NEAR && Math.abs(s.from - x) <= NEAR);
+    const seam = (x) => boxes.some((a) => Math.abs(a.rect[2] - x) <= NEAR && a.rect[0] >= outer[0] - NEAR && boxes.some((b) => b !== a
+      && Math.abs(b.rect[0] - x) <= NEAR && Math.abs(b.rect[1] - a.rect[1]) <= NEAR && Math.abs(b.rect[3] - a.rect[3]) <= NEAR
+      && a.rect[1] >= ys[0] - NEAR && a.rect[3] <= ys.at(-1) + NEAR));
     const joints = !unruled ? [] : cluster(hs.map((s) => s.from).filter((x) => x > outer[0] + CORNER && x < outer.at(-1) - CORNER))
-      .filter((x) => ys.filter((y) => jointOn(y, x)).length >= 2);
+      .filter((x) => ys.filter((y) => jointOn(y, x)).length >= (seam(x) ? 1 : 2));
     const xs = cluster([...outer, ...joints]);
     /** The line along `at` from `from` to `to`, if drawn (in one piece or several, as cell by cell). */
     const edge = (list, at, from, to) => {
@@ -495,6 +511,18 @@ function ruledTablesOf(segments, boxes, lines) {
     const ys = cluster(g.edges.map((e) => e.at)).filter((y, i, all) => i === 0 || y - all[i - 1] > ROW_MIN);
     const top =g.edges.every((e) => e.line) ? firstRowTop(ys, g.from, g.to, lines) : null;
     if (top !== null) ys.unshift(top);
+    // a frame's sides (thin bars) running on past the last row line: the page cuts the table off
+    const sideOf = (x, end) => boxes.filter(({ rect: b }) => b[2] - b[0] <= BAR && Math.abs(b[end] - x) <= RULED_EDGE_SLACK
+      && b[1] < ys.at(-1) && b[3] > ys.at(-1));
+    const sides = [sideOf(g.from, 0), sideOf(g.to, 2)];
+    const reach = sides.every((s) => s.length) ? Math.min(...sides.map((s) => Math.max(...s.map((b) => b.rect[3])))) : 0;
+    const openBottom = reach - ys.at(-1) > ROW_MIN * 2;
+    if (openBottom) ys.push(reach);
+    // an empty first row (a rule just over the table, as under a heading) isn't the table's
+    const fills = boxes.filter((b) => b.color !== "#ffffff");
+    const emptyRow = (y0, y1) => !lines.some((l) => center(l.bbox)[1] > y0 && center(l.bbox)[1] < y1 && l.bbox[0] >= g.from - NEAR && l.bbox[2] <= g.to + NEAR)
+      && !fills.some(({ rect: b }) => b[1] >= y0 - NEAR && b[3] <= y1 + NEAR && b[2] - b[0] > BAR);
+    while (ys.length > 3 && emptyRow(ys[0], ys[1])) ys.shift();
     if (ys.length < 3) continue;
     const bbox = [g.from, ys[0], g.to, ys.at(-1)];
     const rowOf = (l) => ys.findIndex((y, i) => i < ys.length - 1 && center(l.bbox)[1] >= y && center(l.bbox)[1] <= ys[i + 1]);

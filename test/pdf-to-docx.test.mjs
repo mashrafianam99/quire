@@ -332,3 +332,168 @@ test("full pages flow on; a page that ended early keeps its page break", async (
   const breaks = [...body.matchAll(/<w:pageBreakBefore\/>[\s\S]*?<w:t[^>]*>(Line \d+ of page \d+\.)/g)].map((m) => m[1]);
   assert.deepEqual(breaks, ["Line 1 of page 3."], "page 2 flows on from page 1; page 3 starts fresh");
 });
+
+/** Draws pieces [text, font, size] one after another on a line; returns where it ends. */
+function drawRun(page, pieces, x, y) {
+  for (const [text, font, size] of pieces) {
+    page.drawText(text, { x, y, size, font });
+    x += font.widthOfTextAtSize(text, size);
+  }
+  return x;
+}
+
+test("lines drawn one by one, each a block of its own, still join into their paragraph, inline code and all", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const courier = await doc.embedFont(StandardFonts.Courier);
+  const page = doc.addPage([600, 800]);
+  const full = "We have remote controls and devices, and every remote works with every device we";
+  // lines 20pt apart: MuPDF puts each in a block of its own
+  page.drawText(full, { x: 72, y: 700, size: 11, font: helv });
+  // the next line holds more code (in a smaller font) than prose, and is about as wide as the first
+  drawRun(page, [["need ", helv, 11], ["TVRemote", courier, 9], [", ", helv, 11], ["RadioRemote", courier, 9], [", ", helv, 11],
+    ["TVPhoneRemote", courier, 9], [", ", helv, 11], ["RadioPhoneRemote", courier, 9], [" and more like them", helv, 11]], 72, 680);
+  page.drawText("so on.", { x: 72, y: 660, size: 11, font: helv });
+  page.drawText("A short line of its own.", { x: 72, y: 620, size: 11, font: helv });
+  const bytes = await doc.save();
+
+  const { body } = await partsOf(await pdfToDocx(bytes));
+  const paras = body.match(/<w:p>[\s\S]*?<\/w:p>/g).map((p) => [...p.matchAll(/<w:t[^>]*>([^<]*)</g)].map((m) => m[1]).join(""));
+  const joined = paras.find((p) => p.startsWith("We have remote"));
+  assert.ok(joined?.includes("need") && joined.includes("so on."), "the three lines are one paragraph");
+  assert.ok(paras.includes("A short line of its own."), "the paragraph after a gap stays apart");
+});
+
+test("inline code pills on two lines aren't a diagram, and small print next to a diagram is part of it", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const courier = await doc.embedFont(StandardFonts.Courier);
+  const page = doc.addPage([600, 800]);
+  // two lines of prose, each with two grey rounded pills behind code words
+  for (const y of [700, 685]) {
+    let x = drawRun(page, [["Java has ", helv, 11]], 72, y);
+    for (const word of ["java.util.Iterator", "hasNext()"]) {
+      page.drawSvgPath(rounded(courier.widthOfTextAtSize(word, 9) + 6, 12, 3), { x: x - 3, y: y + 9, color: rgb(0.95, 0.94, 0.92) });
+      x = drawRun(page, [[word, courier, 9], [" and ", helv, 11]], x, y);
+    }
+  }
+  // a diagram: two boxes and a slanted connector, with a small-print note 6pt above it
+  page.drawRectangle({ x: 100, y: 400, width: 120, height: 60, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  page.drawRectangle({ x: 360, y: 400, width: 120, height: 60, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  page.drawLine({ start: { x: 220, y: 430 }, end: { x: 360, y: 450 }, thickness: 1 });
+  page.drawText("each handler passes it on", { x: 180, y: 466, size: 6, font: helv });
+  for (let i = 0; i < 4; i++) page.drawText("Body text in the usual size, under the diagram.", { x: 72, y: 300 - i * 15, size: 11, font: helv });
+  const bytes = await doc.save();
+
+  const { pages } = analyzePdf(bytes);
+  const figures = pages[0].images.filter((i) => i.figure);
+  assert.equal(figures.length, 1, "only the diagram is a picture");
+  assert.ok(pages[0].lines.some((l) => l.text.includes("java.util.Iterator")), "the code words stay text");
+  assert.ok(!pages[0].lines.some((l) => l.text.includes("each handler")), "the note is in the diagram's picture");
+});
+
+test("a header bar drawn as cells over one row line gives a framed table its columns", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const grey = rgb(0.89, 0.89, 0.86);
+  const cols = [72, 222, 372, 522];
+  const [top, mid, bottom] = [700, 674, 600];
+  page.drawRectangle({ x: 72, y: bottom, width: 450, height: top - bottom, borderColor: grey, borderWidth: 0.7 });
+  for (let c = 0; c < 3; c++) {
+    page.drawRectangle({ x: cols[c], y: mid, width: 150, height: top - mid, color: rgb(0.24, 0.35, 0.54) });
+    page.drawLine({ start: { x: cols[c], y: mid }, end: { x: cols[c + 1], y: mid }, thickness: 0.7, color: grey });
+    page.drawText(["Creational", "Structural", "Behavioral"][c], { x: cols[c] + 8, y: mid + 9, size: 11, font: helv, color: rgb(1, 1, 1) });
+    ["One", "Two", "Three"].forEach((t, i) => page.drawText(`${t} ${c + 1}`, { x: cols[c] + 8, y: mid - 18 - i * 15, size: 11, font: helv }));
+  }
+  const bytes = await doc.save();
+
+  const table = analyzePdf(bytes).pages[0].tables.find((t) => !t.box);
+  assert.equal(table.xs.length - 1, 3, "three columns");
+  assert.ok(table.cells.filter((c) => c.row === 0).every((c) => c.fill), "each header cell keeps its fill");
+  assert.deepEqual(table.cells.filter((c) => c.row === 1).map((c) => c.lines.length), [3, 3, 3], "each list in its own column");
+});
+
+test("a zebra table the page cuts off keeps its last row, and a heading's rule just over it isn't a row", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const grey = rgb(0.89, 0.89, 0.86);
+  page.drawText("Comparison", { x: 72, y: 250, size: 14, font: helv });
+  page.drawLine({ start: { x: 72, y: 240 }, end: { x: 522, y: 240 }, thickness: 0.8, color: grey });
+  // the frame's sides run on to the page's edge: the table goes on over the page
+  page.drawRectangle({ x: 71, y: 0, width: 4, height: 232, color: grey });
+  page.drawRectangle({ x: 519, y: 0, width: 4, height: 232, color: grey });
+  const rows = [["Pattern", "Key idea"], ["Observer", "Subscribe and notify"], ["State", "One class per state"], ["Strategy", "Swap algorithms"]];
+  rows.forEach(([a, b], i) => {
+    const y = 232 - (i + 1) * 26;
+    const color = i ? rgb(0, 0, 0) : rgb(1, 1, 1);
+    if (i === 0) page.drawRectangle({ x: 75, y, width: 444, height: 26, color: rgb(0.24, 0.35, 0.54) });
+    page.drawText(a, { x: 84, y: y + 9, size: 11, font: helv, color });
+    page.drawText(b, { x: 240, y: y + 9, size: 11, font: helv, color });
+    if (i < rows.length - 1) page.drawLine({ start: { x: 75, y }, end: { x: 519, y }, thickness: 0.7, color: grey });
+  });
+  const bytes = await doc.save();
+
+  const table = analyzePdf(bytes).pages[0].tables.find((t) => !t.box);
+  assert.ok(table.cells.some((c) => c.lines.some((l) => l.text === "Strategy")), "the last row is in the table");
+  assert.equal(table.cells.find((c) => c.row === 0 && c.col === 0).lines[0]?.text, "Pattern", "the header bar is the first row");
+});
+
+test("Word rows take their text's height, header rows and headings keep with what follows, short rows stay whole", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const page = doc.addPage([600, 800]);
+  page.drawText("Patterns", { x: 72, y: 740, size: 20, font: bold });
+  const rows = [["Pattern", "Purpose"], ["Singleton", "One instance"], ["Builder", "Step by step"]];
+  rows.forEach(([a, b], i) => {
+    const y = 700 - i * 40; // rows much taller than their text
+    if (i === 0) page.drawRectangle({ x: 72, y: y - 8, width: 400, height: 26, color: rgb(0.24, 0.35, 0.54) });
+    page.drawText(a, { x: 80, y, size: 11, font: helv });
+    page.drawText(b, { x: 240, y, size: 11, font: helv });
+    page.drawLine({ start: { x: 72, y: y - 9 }, end: { x: 472, y: y - 9 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+  });
+  for (let i = 0; i < 12; i++) page.drawText(`Body line ${i + 1} of the page, in the usual size.`, { x: 72, y: 560 - i * 15, size: 11, font: helv });
+
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  assert.ok(!/<w:trHeight/.test(body), "no fixed row heights");
+  assert.match(body, /<w:cantSplit\/>/, "short rows don't break across pages");
+  assert.match(body.match(/<w:tr>[\s\S]*?<\/w:tr>/)[0], /<w:keepNext\/>[\s\S]*Pattern/, "the header row stays with the next row");
+  assert.match(body, /<w:pStyle w:val="Heading\d"\/><w:keepNext\/>|<w:keepNext\/>(?:(?!<\/w:pPr>)[\s\S])*<w:pStyle w:val="Heading\d"\/>/, "a heading stays with what follows");
+  const margins = [...body.matchAll(/<w:tcMar><w:top w:type="dxa" w:w="(\d+)"\/>[\s\S]*?<w:bottom w:type="dxa" w:w="(\d+)"\/>/g)];
+  assert.ok(margins.length && margins.every(([, t, b]) => Number(b) <= Number(t)), "the room under a cell's text isn't padding");
+});
+
+test("a running header's left and right pieces share one line, set by tab stops", async () => {
+  const doc = await PDFDocument.load(await pagedPdf([20, 20, 20]));
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  for (const page of doc.getPages()) {
+    page.drawText("CSE 417 - Software Engineering", { x: 72, y: 770, size: 8, font: helv });
+    page.drawText("Part 2", { x: 290 - helv.widthOfTextAtSize("Part 2", 8), y: 770, size: 8, font: helv });
+  }
+  const entries = unzip(await pdfToDocx(await doc.save()));
+  const header = (await Promise.all([...entries.keys()].filter((k) => /^word\/header\d*\.xml$/.test(k))
+    .map(async (k) => new TextDecoder().decode(await entries.get(k)())))).join("");
+  const paras = header.match(/<w:p>[\s\S]*?<\/w:p>/g) ?? [];
+  assert.equal(paras.length, 1, "one paragraph");
+  assert.match(paras[0], /CSE 417[\s\S]*<w:tab\/>[\s\S]*Part 2/, "the right piece after a tab");
+  assert.match(paras[0], /<w:tab w:val="right"/, "at a right tab stop");
+});
+
+test("a page left short only because the next page's picture didn't fit there flows on in Word", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const lines = (page, n) => { for (let i = 0; i < n; i++) page.drawText(`Line ${i + 1} of text.`, { x: 72, y: 720 - i * 16, size: 11, font: helv }); };
+  lines(doc.addPage([600, 800]), 40);
+  lines(doc.addPage([600, 800]), 30); // ends about 250pt above the bottom
+  const third = doc.addPage([600, 800]);
+  // a 290pt-tall diagram first: it couldn't fit in the room left above
+  third.drawRectangle({ x: 100, y: 440, width: 120, height: 290, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  third.drawRectangle({ x: 360, y: 440, width: 120, height: 290, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  third.drawLine({ start: { x: 220, y: 600 }, end: { x: 360, y: 640 }, thickness: 1 });
+  third.drawText("After the figure.", { x: 72, y: 400, size: 11, font: helv });
+
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  assert.ok(!/<w:pageBreakBefore\/>/.test(body), "no forced page break before the picture");
+});
