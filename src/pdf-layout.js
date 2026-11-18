@@ -7,6 +7,11 @@ import * as mupdf from "mupdf";
 const { Matrix } = mupdf;
 
 const THIN = 3; // pt; a filled rectangle at most this thick is a line (how most PDFs draw borders)
+const EPS = 0.5; // pt; rounding slack between a drawing and its clip
+const OPAQUE = 0.99; // a fill at least this opaque hides what was drawn before under it
+const CHECK_MIN = 6; // pt; a stroked square this big (up to CHECK_MAX) may be a form checkbox
+const CHECK_MAX = 20;
+const CHECK_ASPECT = 1.35; // its longer side at most this many times its shorter
 const NEAR = 2; // pt; lines this close count as the same grid line
 const BAND = 0.08; // the top/bottom share of a page where running headers and footers live
 
@@ -66,8 +71,9 @@ const axisRect = (path) => {
 /** The page's straight lines (as segments), filled boxes, and the bounds of everything slanted or
  * curved (arrows, circles, connectors: the marks of a diagram), from its drawing commands. */
 function vectorsOf(page) {
-  const segments = []; // {dir: "h"|"v", at, from, to, width, color}
+  const segments = []; // {dir: "h"|"v", at, from, to, width, color, dash?: "dot"|"dash"}
   const boxes = []; // {rect, color}
+  const squares = []; // small stroked squares (checkbox candidates): {rect, segments}
   const shapes = []; // bounding boxes of slanted/curved subpaths
   const asLine = ([x0, y0, x1, y1], color) => {
     if (y1 - y0 <= THIN && x1 - x0 > y1 - y0) return { dir: "h", at: (y0 + y1) / 2, from: x0, to: x1, width: Math.max(0.25, y1 - y0), color };
@@ -83,13 +89,25 @@ function vectorsOf(page) {
     return r[0] <= r[2] && r[1] <= r[3] ? r : null;
   };
   const pushClip = (bounds) => clips.push(bounds ? (cut(bounds) ?? [0, 0, 0, 0]) : clip());
-  const addSegment = (s) => {
+  const addSegment = (s, into = segments) => {
     const [x0, y0, x1, y1] = clip();
     const [lo, hi] = s.dir === "h" ? [x0, x1] : [y0, y1];
     const [across0, across1] = s.dir === "h" ? [y0, y1] : [x0, x1];
-    if (s.at < across0 || s.at > across1) return;
+    // a box stroked inside a clip of its own size sits on the clip's edge
+    if (s.at < across0 - EPS || s.at > across1 + EPS) return;
     const [from, to] = [Math.max(s.from, lo), Math.min(s.to, hi)];
-    if (to - from > 1) segments.push({ ...s, from, to });
+    if (to - from > 1) into.push({ ...s, from, to });
+  };
+  /** Lines wholly under an opaque box drawn later don't show (overlapping cells drawn one on another). */
+  const hide = ([x0, y0, x1, y1]) => {
+    const hidden = (s) => (s.dir === "h"
+      ? s.at > y0 + EPS && s.at < y1 - EPS && s.from >= x0 - EPS && s.to <= x1 + EPS
+      : s.at > x0 + EPS && s.at < x1 - EPS && s.from >= y0 - EPS && s.to <= y1 + EPS);
+    for (let i = segments.length - 1; i >= 0; i--) if (hidden(segments[i])) segments.splice(i, 1);
+  };
+  const isSquare = (r) => {
+    const [w, h] = [r[2] - r[0], r[3] - r[1]];
+    return Math.min(w, h) >= CHECK_MIN && Math.max(w, h) <= CHECK_MAX && Math.max(w, h) <= Math.min(w, h) * CHECK_ASPECT;
   };
   const device = new mupdf.Device({
     fillPath(path, evenOdd, ctm, colorspace, color, alpha) {
@@ -104,25 +122,34 @@ function vectorsOf(page) {
         if (!rect) continue;
         const line = asLine(rect, c);
         if (line) segments.push(line);
-        else boxes.push({ rect, color: c });
+        else {
+          if (alpha >= OPAQUE) hide(rect);
+          boxes.push({ rect, color: c });
+        }
       }
     },
     strokePath(path, stroke, ctm, colorspace, color, alpha) {
       if (alpha < 0.1) return;
       const c = colorOf(colorspace, color);
       const width = Math.max(0.25, (stroke.getLineWidth?.() ?? 1) * (Math.hypot(ctm[0], ctm[1]) || 1));
+      const dashes = stroke.getDashes?.() ?? [];
+      // short dashes, about as long as the line is thick, are dots
+      const dash = dashes.length ? (dashes[0] <= (stroke.getLineWidth?.() ?? 1) * 1.5 ? "dot" : "dash") : undefined;
       for (const pts of subpaths(path, ctm)) {
         if (slanted(pts)) {
           const bbox = cut(boundsOf(pts));
           if (bbox) shapes.push({ bbox, closed: closedPath(pts) });
         }
+        const square = closedPath(pts) && axisRect(pts);
+        const into = square && isSquare(square) ? [] : segments;
+        if (into !== segments) squares.push({ rect: square, segments: into });
         for (let i = 1; i < pts.length; i++) {
           const [p, q] = [pts[i - 1], pts[i]];
           if (!p || !q) continue;
           if (Math.abs(p[1] - q[1]) < 0.5 && Math.abs(p[0] - q[0]) > 1) {
-            addSegment({ dir: "h", at: p[1], from: Math.min(p[0], q[0]), to: Math.max(p[0], q[0]), width, color: c });
+            addSegment({ dir: "h", at: p[1], from: Math.min(p[0], q[0]), to: Math.max(p[0], q[0]), width, color: c, dash }, into);
           } else if (Math.abs(p[0] - q[0]) < 0.5 && Math.abs(p[1] - q[1]) > 1) {
-            addSegment({ dir: "v", at: p[0], from: Math.min(p[1], q[1]), to: Math.max(p[1], q[1]), width, color: c });
+            addSegment({ dir: "v", at: p[0], from: Math.min(p[1], q[1]), to: Math.max(p[1], q[1]), width, color: c, dash }, into);
           }
         }
       }
@@ -137,7 +164,7 @@ function vectorsOf(page) {
   });
   page.run(device, Matrix.identity);
   device.close();
-  return { segments, boxes, shapes };
+  return { segments, boxes, shapes, squares };
 }
 
 // ---------- figures ----------
@@ -313,6 +340,29 @@ function bulletsOf(shapes, lines) {
   });
 }
 
+const CHECK = "☐"; // ☐
+const CHECK_GAP = 1.5; // in box widths; the most room between a checkbox and its label
+
+/** Small stroked squares with a label just right of them (form checkboxes) become a "☐" in front of
+ * the label, in its font and size. Returns the lines and the squares that aren't checkboxes. */
+function checksOf(squares, lines) {
+  const out = [...lines];
+  const rest = [];
+  for (const sq of squares) {
+    const [x0, y0, x1, y1] = sq.rect;
+    const cy = (y0 + y1) / 2;
+    const i = out.findIndex((l) => !l.vertical && l.bbox[0] >= x1 - 1 && l.bbox[0] - x1 <= (x1 - x0) * CHECK_GAP
+      && cy >= l.bbox[1] && cy <= l.bbox[3] && y1 - y0 <= (l.bbox[3] - l.bbox[1]) * 2);
+    if (i < 0 || out.some((l) => inside(sq.rect, center(l.bbox)))) { rest.push(sq); continue; }
+    const l = out[i];
+    const first = l.chars.find((c) => c.c.trim()) ?? l.chars[0];
+    const box = { ...first, c: CHECK, x0, x1, badge: undefined, bg: undefined };
+    const mark = [box, { ...first, c: " ", x0: x1, x1: l.bbox[0], badge: undefined, bg: undefined }];
+    out[i] = { ...l, chars: [...mark, ...l.chars], text: `${CHECK} ${l.text}`, bbox: [x0, Math.min(y0, l.bbox[1]), l.bbox[2], Math.max(y1, l.bbox[3])] };
+  }
+  return { lines: out, rest };
+}
+
 // ---------- tables ----------
 
 function cluster(values) {
@@ -389,7 +439,7 @@ function tablesOf(segments, boxes) {
     };
     const side = (list, at, from, to) => {
       const s = edge(list, at, from, to);
-      return s ? { width: s.width, color: s.color } : null;
+      return s ? { width: s.width, color: s.color, dash: s.dash } : null;
     };
     const taken = new Set();
     const cells = [];
@@ -400,13 +450,15 @@ function tablesOf(segments, boxes) {
         const split = (x) => edge(vs, x, ys[r], ys[r + 1]) || jointOn(ys[r], x) || jointOn(ys[r + 1], x);
         while (c + colSpan < xs.length - 1 && !split(xs[c + colSpan])) colSpan++;
         let rowSpan = 1;
-        while (r + rowSpan < ys.length - 1 && !edge(hs, ys[r + rowSpan], xs[c], xs[c + colSpan])) rowSpan++;
+        // cells with no line on their left (an open area beside the table, totals' labels) aren't merged down
+        const open = !edge(vs, xs[c], ys[r], ys[r + 1]);
+        while (!open && r + rowSpan < ys.length - 1 && !edge(hs, ys[r + rowSpan], xs[c], xs[c + colSpan])) rowSpan++;
         for (let i = 0; i < rowSpan; i++) for (let j = 0; j < colSpan; j++) taken.add(`${r + i}:${c + j}`);
         const rect = [xs[c], ys[r], xs[c + colSpan], ys[r + rowSpan]];
         const area = (rect[2] - rect[0]) * (rect[3] - rect[1]);
         const overlap = (b) => Math.max(0, Math.min(b[2], rect[2]) - Math.max(b[0], rect[0]))
           * Math.max(0, Math.min(b[3], rect[3]) - Math.max(b[1], rect[1]));
-        const fill = boxes.find(({ rect: b, color }) => color !== "#ffffff" && overlap(b) >= area * 0.8);
+        const fill = boxes.findLast(({ rect: b, color }) => color !== "#ffffff" && overlap(b) >= area * 0.8);
         cells.push({
           row: r, col: c, rowSpan, colSpan, rect,
           borders: {
@@ -460,7 +512,7 @@ function dottedLines(segments) {
     if (run) { run.to = d.x; run.n++; } else runs.push({ y: d.y, from: d.x, to: d.x, n: 1, dot: d });
   }
   return runs.filter((r) => r.n >= DOTS_MIN)
-    .map((r) => ({ dir: "h", at: r.y, from: r.from, to: r.to, width: r.dot.width, color: r.dot.color }));
+    .map((r) => ({ dir: "h", at: r.y, from: r.from, to: r.to, width: r.dot.width, color: r.dot.color, dash: "dot" }));
 }
 
 const UNDERLINE_GAP = 5; // pt; text ending this close above a line is underlined by it
@@ -490,8 +542,12 @@ function ruledTablesOf(segments, boxes, lines) {
   ]).filter((e) => e.to - e.from >= RULED_MIN_WIDTH).sort((a, b) => a.at - b.at);
   // runs of edges with the same left and right ends, stacked without big gaps
   const stacks = [];
+  // a wider line between two rows (a full-width fill-in line between paired ones) ends the stack
+  const across = (x, e) => edges.some((o) => o.at > x.edges.at(-1).at + NEAR && o.at < e.at - NEAR
+    && o.from <= x.from + RULED_EDGE_SLACK && o.to >= x.to - RULED_EDGE_SLACK && o.to - o.from > x.to - x.from + RULED_EDGE_SLACK);
   for (const e of edges) {
-    const g = stacks.find((x) => Math.abs(x.from - e.from) <= RULED_EDGE_SLACK && Math.abs(x.to - e.to) <= RULED_EDGE_SLACK && e.at - x.edges.at(-1).at <= RULED_MAX_ROW);
+    const g = stacks.find((x) => Math.abs(x.from - e.from) <= RULED_EDGE_SLACK && Math.abs(x.to - e.to) <= RULED_EDGE_SLACK && e.at - x.edges.at(-1).at <= RULED_MAX_ROW
+      && !across(x, e));
     if (g) g.edges.push(e); else stacks.push({ from: e.from, to: e.to, edges: [e] });
   }
   // stacks side by side on the same rows (a two-column list) are one table
@@ -550,8 +606,8 @@ function ruledTablesOf(segments, boxes, lines) {
         const area = (rect[2] - rect[0]) * (rect[3] - rect[1]);
         const overlap = (b) => Math.max(0, Math.min(b[2], rect[2]) - Math.max(b[0], rect[0]))
           * Math.max(0, Math.min(b[3], rect[3]) - Math.max(b[1], rect[1]));
-        const fill = boxes.find(({ rect: b, color }) => color !== "#ffffff" && overlap(b) >= area * 0.8);
-        const side = (s) => (s ? { width: s.width, color: s.color } : null);
+        const fill = boxes.findLast(({ rect: b, color }) => color !== "#ffffff" && overlap(b) >= area * 0.8);
+        const side = (s) => (s ? { width: s.width, color: s.color, dash: s.dash } : null);
         cells.push({ row: r, col: c, rowSpan: 1, colSpan: 1, rect,
           borders: { top: side(lineAt(ys[r])), bottom: side(lineAt(ys[r + 1])), left: null, right: null },
           fill: fill?.color ?? null, lines: [], images: [] });
@@ -664,6 +720,39 @@ function rowsOfBoxes(tables) {
   return rows;
 }
 
+/** Filled header boxes sitting on top of a grid table (a dark header bar drawn apart from the
+ * table's lines, often as overlapping boxes) become the grid's first row, cut at the grid's columns
+ * (a header line over several columns spans them). Returns the new table and the boxes used, or null. */
+function headOnto(grid, boxTables) {
+  const [gx0, gy0, gx1] = grid.bbox;
+  const heads = boxTables.filter((t) => t.ys.length === 2 && t.cells.every((c) => c.fill) && t.bbox[1] < gy0 - NEAR
+    && t.bbox[3] >= gy0 - NEAR && t.bbox[3] < grid.ys[1] - NEAR && t.bbox[0] >= gx0 - EDGE_NEAR && t.bbox[2] <= gx1 + EDGE_NEAR);
+  // the boxes must cover the grid's width (they may overlap)
+  let reach = gx0;
+  for (const t of [...heads].sort((a, b) => a.bbox[0] - b.bbox[0])) if (t.bbox[0] <= reach + NEAR) reach = Math.max(reach, t.bbox[2]);
+  if (!heads.length || reach < gx1 - EDGE_NEAR) return null;
+  const top = Math.min(...heads.map((t) => t.bbox[1]));
+  const bottom = Math.max(gy0, ...heads.map((t) => t.bbox[3]));
+  const headCells = heads.flatMap((t) => t.cells);
+  const lines = headCells.flatMap((c) => c.lines);
+  const images = headCells.flatMap((c) => c.images);
+  const crosses = (x) => lines.some((l) => l.bbox[0] < x - NEAR && l.bbox[2] > x + NEAR);
+  const { xs } = grid;
+  const cells = [];
+  for (let c = 0, span; c < xs.length - 1; c += span) {
+    for (span = 1; c + span < xs.length - 1 && crosses(xs[c + span]); span++);
+    const rect = [xs[c], top, xs[c + span], bottom];
+    const fill = headCells.findLast((h) => inside(h.rect, center(rect)))?.fill ?? heads[0].cells[0].fill;
+    cells.push({ row: 0, col: c, rowSpan: 1, colSpan: span, rect, fill,
+      borders: { top: null, bottom: null, left: null, right: null },
+      lines: lines.filter((l) => inside(rect, center(l.bbox))), images: images.filter((i) => inside(rect, center(i.bbox))) });
+  }
+  // the grid's first row starts under the header (its top line, if any, is hidden by it)
+  const under = grid.cells.map((c) => ({ ...c, row: c.row + 1,
+    ...(c.row === 0 ? { rect: [c.rect[0], bottom, c.rect[2], c.rect[3]], borders: { ...c.borders, top: null } } : {}) }));
+  return { table: { ...grid, bbox: [gx0, top, gx1, grid.bbox[3]], ys: [top, bottom, ...grid.ys.slice(1)], cells: [...cells, ...under] }, heads };
+}
+
 const ROW_GAP = 1.5; // in font sizes; pieces of text on one baseline closer than this are one line
 
 /** Pieces MuPDF reads as separate lines but that sit on one baseline close together (a numbered
@@ -675,7 +764,7 @@ function joinRows(lines) {
   for (const line of [...lines].sort((a, b) => a.bbox[0] - b.bbox[0])) {
     const left = out.find((o) => !o.vertical && !line.vertical && Math.abs(baseline(o) - baseline(line)) <= 2
       && line.bbox[0] - o.bbox[2] >= -1 && line.bbox[0] - o.bbox[2] <= ROW_GAP * Math.max(sizeOf(o), sizeOf(line)));
-    if (!left) { out.push(line); continue; }
+    if (!left || line.chars[0].c === CHECK) { out.push(line); continue; } // each checkbox is a field of its own
     const space = { ...left.chars.at(-1), c: " ", x0: left.bbox[2], x1: line.bbox[0], badge: undefined };
     Object.assign(left, {
       chars: [...left.chars, space, ...line.chars], text: `${left.text} ${line.text}`,
@@ -773,7 +862,9 @@ export function analyzePdf(bytes) {
       const [x0, y0, x1, y1] = page.getBounds();
       const vectors = vectorsOf(page);
       const read = contentOf(page);
-      const content = { ...read, lines: bulletsOf(vectors.shapes, read.lines) };
+      const checked = checksOf(vectors.squares, bulletsOf(vectors.shapes, read.lines));
+      vectors.segments.push(...checked.rest.flatMap((sq) => sq.segments)); // squares that aren't checkboxes stay lines
+      const content = { ...read, lines: checked.lines };
       badgesOf(vectors.shapes, content.lines);
       shadeInlineCode(content.lines, vectors);
       const pageArea = (x1 - x0) * (y1 - y0);
@@ -803,7 +894,7 @@ export function analyzePdf(bytes) {
       const ruled = ruledTablesOf(segments.filter((s) => !gridSegments.has(s)), boxes.filter((b) => !inGrid(b.rect)),
         lines.filter((l) => !inGrid(l.bbox))).map((t) => untilHeading(t, lines)).filter(Boolean);
       const holdsTable = (box) => [...grids, ...ruled].some((t) => inside(box.bbox, center(t.bbox)));
-      const tables = [...grids, ...ruled, ...allGrids.filter((t) => t.cells.length === 1 && !holdsTable(t))];
+      let tables = [...grids, ...ruled, ...allGrids.filter((t) => t.cells.length === 1 && !holdsTable(t))];
       const cellAt = (b) => {
         const p = center(b);
         return tables.find((t) => inside(t.bbox, p))?.cells.find((c) => inside(c.rect, p));
@@ -817,7 +908,9 @@ export function analyzePdf(bytes) {
       const taken = (r) => solid.some((b) => inside(b, center(r)) || inside(r, center(b)));
       const boxTables = boxTablesOf(vectors, freeLines, freeImages.filter((img) => !img.figure), pageArea, taken);
       const inBox = (b) => boxTables.some((t) => t.cells.some((c) => c.lines.some((l) => l.bbox === b) || c.images.some((i) => i.bbox === b)));
-      tables.push(...boxTables);
+      const headed = grids.map((g) => headOnto(g, boxTables)).filter(Boolean);
+      const used = new Set(headed.flatMap((h) => h.heads));
+      tables = [...tables.map((t) => headed.find((h) => h.table.segments === t.segments)?.table ?? t), ...boxTables.filter((t) => !used.has(t))];
       const tableSegments = new Set(tables.flatMap((t) => t.segments));
       pages.push({
         width: x1 - x0, height: y1 - y0,
