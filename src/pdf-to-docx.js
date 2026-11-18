@@ -7,7 +7,7 @@
 // live page numbers (a cover without them gets a section of its own).
 import {
   AlignmentType, BorderStyle, Document, Footer, FrameAnchorType, Header, HeadingLevel, HorizontalPositionRelativeFrom, ImageRun,
-  LevelFormat, Packer, PageNumber, Paragraph, ShadingType, Table, TableCell, TableLayoutType, TableRow, TextRun,
+  LevelFormat, Packer, PageNumber, Paragraph, ShadingType, Tab, Table, TableCell, TableLayoutType, TableRow, TabStopType, TextRun,
   VerticalPositionRelativeFrom, WidthType,
 } from "docx";
 import { analyzePdf } from "./pdf-layout.js";
@@ -23,6 +23,10 @@ const FRAME_SLACK = 1.15; // a framed paragraph's room for a wider stand-in font
 const FRESH_GAP = 0.15; // a page that ended this share of its height early: the next starts on a fresh page
 const SPACE_WIDTH = 0.25; // a space is about this share of the font size
 const HEADING_SLACK = 0.5; // pt: a heading this close to the document's largest is a top-level one
+const LEAD_GAP = 16; // pt; an item this close under a page's first picture (its caption) goes with it
+const SPLIT_START = 48; // pt; the room a paragraph or table needs to start on a page (a couple of lines)
+const SUBHEAD_SIZE = 1.03; // a one-line paragraph this much bigger than the body heads what follows
+const KEEP_ROW = 0.3; // share of the page height; a table row (a callout) up to this tall isn't split across pages
 
 /** Free fonts that stand in for Office fonts, mapped back so Word shows the original look; and
  * web fonts Word doesn't have, mapped to the closest font it does. */
@@ -58,20 +62,46 @@ const pct = (values, p) => {
 const isCode = (line) => line.chars.every((c) => !c.c.trim() || c.font.mono);
 const MAX_BLANKS = 3; // blank lines kept inside a listing; a wider gap starts a new listing
 
+/** A line's text size: its usual size, not counting inline code (often set smaller). */
+const sizeOf = (line) => {
+  const prose = line.chars.filter((c) => c.c.trim() && !c.font.mono);
+  return mode((prose.length ? prose : line.chars).map((c) => Math.round(c.size * 2) / 2));
+};
+const FULL_LINE = 3; // in font sizes; a line ending this close to the column's right edge is full
+const SAME_LEFT = 4; // pt; lines starting this close are in one column (inline code's pill starts a little off)
+
+/** MuPDF's text blocks, with a line that runs on from a full line above it (same x, same size, a
+ * line apart) taken into that line's block: some PDFs, justified text especially, put each line in
+ * a block of its own. */
+function blocksOf(lines) {
+  const right = Math.max(...lines.map((l) => l.bbox[2]));
+  let block = 0;
+  return lines.map((line, i) => {
+    const prev = lines[i - 1];
+    const stacked = prev && Math.abs(prev.bbox[0] - line.bbox[0]) <= SAME_LEFT && sizeOf(prev) === sizeOf(line)
+      && prev.bbox[2] >= right - sizeOf(prev) * FULL_LINE
+      && line.bbox[1] >= prev.bbox[1] && line.bbox[1] - prev.bbox[3] < sizeOf(line) * 0.8;
+    if (prev && prev.block !== line.block && !stacked) block++;
+    return block;
+  });
+}
+
 /** The lines of a page (or cell) grouped into paragraphs. */
 function paragraphsOf(lines) {
+  const blocks = blocksOf(lines);
+  const blockOf = new Map(lines.map((l, i) => [l, blocks[i]]));
   const blockRight = new Map();
-  for (const l of lines) blockRight.set(l.block, Math.max(blockRight.get(l.block) ?? 0, l.bbox[2]));
+  for (const l of lines) blockRight.set(blockOf.get(l), Math.max(blockRight.get(blockOf.get(l)) ?? 0, l.bbox[2]));
   const paras = [];
   for (const line of lines) {
-    const size = mode(line.chars.map((c) => Math.round(c.size * 2) / 2));
+    const size = sizeOf(line);
     const para = paras.at(-1);
     const prev = para?.lines.at(-1);
     const avgChar = (line.bbox[2] - line.bbox[0]) / Math.max(1, line.text.length);
-    const joins = prev && prev.block === line.block && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
+    const joins = prev && blockOf.get(prev) === blockOf.get(line) && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
       && Math.abs(para.size - size) <= size * 0.15
       && line.bbox[1] - prev.bbox[3] < size * 0.8 && line.bbox[1] >= prev.bbox[1] + size * 0.5
-      && prev.bbox[2] >= blockRight.get(prev.block) - avgChar * 8; // a short line ends its paragraph
+      && prev.bbox[2] >= blockRight.get(blockOf.get(prev)) - avgChar * 8; // a short line ends its paragraph
     if (joins) para.lines.push(line);
     else paras.push({ lines: [line], size, code: isCode(line) });
   }
@@ -205,7 +235,7 @@ function frameOf(para, alignment, pageWidth) {
 
 /** A paragraph as Word paragraphs (a code line may bring blank lines before it); a framed one
  * stays where it is on the page (text over a background). */
-function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, extra = [], framed = false }) {
+function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, extra = [], framed = false, keepNext = false }) {
   if (para.code) return codeOf(para, ctx, { left, before, pageBreak, extra });
   const listed = LIST_MARK.test(para.lines[0].text);
   const { alignment, indent } = layoutOf(para, left, right, ctx.isIndent);
@@ -217,8 +247,11 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
   const over = ctx.rules?.find((s) => !s.used && s.at <= para.bbox[1] + slack && s !== under && near(s, para.bbox[1]));
   for (const s of [under, over]) if (s) s.used = true;
   const lineGaps = para.lines.slice(1).map((l, i) => l.chars[0].baseline - para.lines[i].chars[0].baseline);
+  const heading = listed ? undefined : headingOf(para, ctx.bodySize);
   return [new Paragraph({
-    heading: listed ? undefined : headingOf(para, ctx.bodySize),
+    heading,
+    // a heading, or a one-line subheading a little bigger than the body, stays with what it heads
+    keepNext: keepNext || !!heading || (para.lines.length === 1 && para.size >= ctx.bodySize * SUBHEAD_SIZE) || undefined,
     alignment,
     indent: listed || framed ? undefined : indent,
     frame: framed ? frameOf(para, alignment, ctx.pageWidth) : undefined,
@@ -267,7 +300,10 @@ function tableOf(table, ctx) {
   for (let r = 0; r < table.ys.length - 1; r++) {
     const cells = table.cells.filter((c) => c.row === r).sort((a, b) => a.col - b.col);
     if (!cells.length) continue; // shortcut: a row made only of cells merged from above is dropped
+    // shortcut: no row height; Word sizes rows to their text (an "at least" height made Word's rows
+    // taller than the PDF's), so an empty spacer row comes out a line tall
     rows.push(new TableRow({
+      cantSplit: table.ys[r + 1] - table.ys[r] <= ctx.pageHeight * KEEP_ROW || undefined,
       children: cells.map((cell) => {
         const [cx0, cy0, cx1, cy1] = cell.rect;
         // the cell's padding is the gap between its border and its content
@@ -275,11 +311,15 @@ function tableOf(table, ctx) {
         const inset = (f, fallback) => Math.round(Math.max(0, Math.min(36, content.length ? f() : fallback)) * TW);
         // the narrower side, so centred text isn't squeezed; an empty cell (a gap between boxes) needs none
         const padX = inset(() => Math.min(Math.min(...content.map((b) => b[0])) - cx0, cx1 - Math.max(...content.map((b) => b[2]))), 0);
-        const margins = { left: padX, right: padX,
-          top: inset(() => Math.min(...content.map((b) => b[1])) - cy0, 2),
-          bottom: inset(() => cy1 - Math.max(...content.map((b) => b[3])), 2) };
+        const top = inset(() => Math.min(...content.map((b) => b[1])) - cy0, 2);
+        // the room under a short cell's text comes from its row's taller cells; as padding it would
+        // add to the row's height wherever Word's lines come out taller than the PDF's
+        const margins = { left: padX, right: padX, top,
+          bottom: Math.min(top, inset(() => cy1 - Math.max(...content.map((b) => b[3])), 2)) };
         const [inL, inR] = [cx0 + margins.left / TW, cx1 - margins.right / TW];
-        const paras = paragraphsOf(cell.lines).flatMap((p) => paragraphOf(p, { ...ctx, rules: null, isIndent: () => false }, { left: inL, right: inR }));
+        // a header row stays with the row under it
+        const keepNext = r === 0 && table.ys.length > 2;
+        const paras = paragraphsOf(cell.lines).flatMap((p) => paragraphOf(p, { ...ctx, rules: null, isIndent: () => false }, { left: inL, right: inR, keepNext }));
         const pictures = cell.images.map((img) => imageOf(img, { left: inL, right: inR }));
         return new TableCell({
           margins,
@@ -288,7 +328,7 @@ function tableOf(table, ctx) {
           width: { size: widths.slice(cell.col, cell.col + cell.colSpan).reduce((a, b) => a + b, 0), type: WidthType.DXA },
           borders: { top: side(cell.borders.top), bottom: side(cell.borders.bottom), left: side(cell.borders.left), right: side(cell.borders.right) },
           shading: cell.fill ? { fill: cell.fill.slice(1), type: ShadingType.CLEAR, color: "auto" } : undefined,
-          children: [...paras, ...pictures].length ? [...paras, ...pictures] : [new Paragraph("")],
+          children: [...paras, ...pictures].length ? [...paras, ...pictures] : [new Paragraph({ keepNext: keepNext || undefined })],
         });
       }),
     }));
@@ -301,19 +341,41 @@ function tableOf(table, ctx) {
 
 // ---------- header and footer ----------
 
+const FIELDS = { "{PAGE}": PageNumber.CURRENT, "{NUMPAGES}": PageNumber.TOTAL_PAGES, "{SECTIONPAGES}": PageNumber.TOTAL_PAGES_IN_SECTION };
+
+/** A band line's text as runs in its own style, page-number fields live. */
+function bandRuns({ text, line }) {
+  const c = line.chars.find((ch) => ch.c.trim()) ?? line.chars[0];
+  const style = { font: wordFont(c.font), size: Math.round(c.size * 2), bold: c.font.bold, italics: c.font.italic,
+    color: c.color === "#000000" ? undefined : c.color.slice(1) };
+  return text.split(/(\{PAGE\}|\{NUMPAGES\}|\{SECTIONPAGES\})/).filter(Boolean).map((part) => (FIELDS[part]
+    ? new TextRun({ ...style, children: [FIELDS[part]] })
+    : new TextRun({ ...style, text: part })));
+}
+
+/** The header or footer: lines on one row (a title left, a part name right) share a paragraph,
+ * placed at the centre and right edge with tab stops, as Word's own header has them. */
 function bandParagraphs(band, left, right) {
-  return band.map(({ text, line }) => {
-    const c = line.chars.find((ch) => ch.c.trim()) ?? line.chars[0];
-    const style = { font: wordFont(c.font), size: Math.round(c.size * 2), bold: c.font.bold, italics: c.font.italic,
-      color: c.color === "#000000" ? undefined : c.color.slice(1) };
-    const fields = { "{PAGE}": PageNumber.CURRENT, "{NUMPAGES}": PageNumber.TOTAL_PAGES, "{SECTIONPAGES}": PageNumber.TOTAL_PAGES_IN_SECTION };
-    const children = text.split(/(\{PAGE\}|\{NUMPAGES\}|\{SECTIONPAGES\})/).filter(Boolean).map((part) => (fields[part]
-      ? new TextRun({ ...style, children: [fields[part]] })
-      : new TextRun({ ...style, text: part })));
-    const [x0, , x1] = line.bbox;
-    const alignment = Math.abs((x0 + x1) / 2 - (left + right) / 2) < 8 ? AlignmentType.CENTER
-      : Math.abs(x1 - right) < 8 ? AlignmentType.RIGHT : AlignmentType.LEFT;
-    return new Paragraph({ alignment, children });
+  const rows = [];
+  for (const item of [...band].sort((a, b) => a.line.bbox[1] - b.line.bbox[1])) {
+    const row = rows.find((r) => item.line.bbox[1] < r[0].line.bbox[3] && item.line.bbox[3] > r[0].line.bbox[1]);
+    if (row) row.push(item); else rows.push([item]);
+  }
+  // 0: the left margin, 1: the centre, 2: the right margin
+  const stopOf = ({ line: { bbox: [x0, , x1] } }) => (Math.abs((x0 + x1) / 2 - (left + right) / 2) < 8 ? 1
+    : Math.abs(x1 - right) < 8 ? 2 : 0);
+  const stops = [{ type: TabStopType.CENTER, position: Math.round(((right - left) / 2) * TW) },
+    { type: TabStopType.RIGHT, position: Math.round((right - left) * TW) }];
+  return rows.map((row) => {
+    let at = 0;
+    const children = row.sort((a, b) => a.line.bbox[0] - b.line.bbox[0]).flatMap((item, k) => {
+      // a later piece goes to the centre if it's centred there, else to the right margin
+      const stop = k ? (stopOf(item) === 1 && at < 1 ? 1 : 2) : stopOf(item);
+      const tabs = Array.from({ length: stop - at }, () => new TextRun({ children: [new Tab()] }));
+      at = stop;
+      return [...tabs, ...bandRuns(item)];
+    });
+    return new Paragraph({ tabStops: stops, children });
   });
 }
 
@@ -358,7 +420,14 @@ export async function pdfToDocx(bytes) {
     // the bottom margin is measured from the text, so a short document may not reach it; assume
     // it's at least as deep as the top margin
     const floor = prev.height - Math.min(top, bottom);
-    return ended < floor - prev.height * FRESH_GAP;
+    // a page left short because what comes next (a figure and its caption) didn't fit there ended
+    // where it had to; in Word, where the text before often takes less room, it may fit, so it flows
+    // (text and tables split across pages, so only their first lines need the room)
+    const [first, next] = pageItems[p];
+    const firstBottom = first?.img && next && next.top - first.bottom < LEAD_GAP ? next.bottom : first?.bottom ?? 0;
+    const needed = first ? (first.img ? firstBottom - first.top : Math.min(firstBottom - first.top, SPLIT_START)) : 0;
+    const fitted = needed <= floor - ended;
+    return ended < floor - prev.height * FRESH_GAP && fitted;
   };
 
   // pages before the first one with a header/footer (a cover) get a section of their own, without them
@@ -366,7 +435,7 @@ export async function pdfToDocx(bytes) {
   const sectionChildren = [[], []];
   pages.forEach((page, p) => {
     const children = sectionChildren[p < split ? 0 : 1];
-    const ctx = { bodySize, rules: page.rules, isIndent, left, pageWidth: page.width };
+    const ctx = { bodySize, rules: page.rules, isIndent, left, pageWidth: page.width, pageHeight: page.height };
     const framed = hasBackground(p); // text over artwork stays where it is on the page, so the page can't grow
     let pageBreak = p > 0 && p !== split && startsFresh(p);
     if (framed) {
@@ -379,7 +448,10 @@ export async function pdfToDocx(bytes) {
       const before = item.top - y;
       const breaks = pageBreak && i === 0;
       if (item.para) {
-        children.push(...paragraphOf(item.para, ctx, { left, right, before, pageBreak: breaks, framed }));
+        // a tag set on a heading's row ("BEHAVIORAL") stays with the heading's section too
+        const prev = pageItems[p][i - 1];
+        const keepNext = !!prev?.para && !!headingOf(prev.para, bodySize) && item.top < prev.bottom;
+        children.push(...paragraphOf(item.para, ctx, { left, right, before, pageBreak: breaks, framed, keepNext }));
       } else if (item.img) {
         children.push(imageOf(item.img, { left, right, before, pageBreak: breaks }));
       } else {
@@ -387,7 +459,7 @@ export async function pdfToDocx(bytes) {
         const prev = pageItems[p][i - 1]?.table;
         const joins = prev && before <= NEAR_JOIN && Math.abs(prev.bbox[0] - item.table.bbox[0]) <= NEAR_JOIN
           && Math.abs(prev.bbox[2] - item.table.bbox[2]) <= NEAR_JOIN;
-        if (breaks || before > 6 || (prev && !joins)) children.push(new Paragraph({ pageBreakBefore: breaks || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
+        if (breaks || before > 6 || (prev && !joins)) children.push(new Paragraph({ pageBreakBefore: breaks || undefined, keepNext: true, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
         children.push(tableOf(item.table, ctx));
       }
       y = Math.max(y, item.bottom);
