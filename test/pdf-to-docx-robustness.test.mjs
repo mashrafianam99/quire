@@ -103,6 +103,40 @@ test("a picture drawn with no height or width is left out, so Word can open the 
   assert.ok(extents.every(([cx, cy]) => cx > 0 && cy > 0), "Word rejects a picture with a zero or negative size");
 });
 
+test("a poster bigger than Word's largest page gets Word's largest page, with its picture shrunk to fit", async () => {
+  const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 300, 480], false);
+  pix.clear(120);
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([2160, 3456]); // 30 x 48 in
+  page.drawImage(await doc.embedPng(pix.asPNG()), { x: 0, y: 0, width: 2160, height: 3456 });
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+
+  const [, w, h] = body.match(/<w:pgSz w:w="(\d+)" w:h="(\d+)"/).map(Number);
+  assert.ok(w <= 31680 && h <= 31680, `page ${w} x ${h} twips; Word's largest is 22 in (31680)`);
+  const [, cx, cy] = body.match(/<wp:extent cx="(\d+)" cy="(\d+)"/).map(Number);
+  const [pageWidth, pageHeight] = [w * 635, h * 635]; // EMU
+  assert.ok(cx < pageWidth && cy < pageHeight, "the picture fits on the page");
+});
+
+test("a page that is all table under a centred title keeps margins that leave room for the table", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([596, 842]);
+  page.drawText("Stack", { x: 280, y: 810, size: 14, font: helv });
+  const [x0, x1, xMid] = [30, 566, 60];
+  for (let r = 0; r <= 30; r++) page.drawLine({ start: { x: x0, y: 780 - r * 24 }, end: { x: x1, y: 780 - r * 24 }, thickness: 0.5 });
+  for (const x of [x0, xMid, x1]) page.drawLine({ start: { x, y: 780 }, end: { x, y: 60 }, thickness: 0.5 });
+  for (let r = 0; r < 30; r++) {
+    page.drawText(String(r + 1), { x: x0 + 6, y: 764 - r * 24, size: 10, font: helv });
+    page.drawText(`Push item ${r + 1} on the stack, then look at the top.`, { x: xMid + 6, y: 764 - r * 24, size: 10, font: helv });
+  }
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+
+  const margin = (side) => Number(body.match(new RegExp(`<w:pgMar[^>]* w:${side}="(\\d+)"`))[1]) / 20;
+  assert.ok(margin("left") <= 596 / 4, `left margin ${margin("left")} pt`);
+  assert.ok(margin("bottom") <= 842 / 4, `bottom margin ${margin("bottom")} pt`);
+});
+
 test("a scanned page comes out as a picture of the page, kept as JPEG so the .docx stays small", async () => {
   const [w, h] = [1240, 1754]; // A4 at 150 dpi
   const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, w, h], false);
