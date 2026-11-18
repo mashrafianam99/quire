@@ -211,12 +211,13 @@ function picture(page, [x0, y0, x1, y1], { withText = true } = {}) {
 function fontOf(font) {
   const name = font.getName().replace(/^[A-Z]{6}\+/, "");
   const family = name.replace(/[-,](Bold|Italic|Oblique|Regular|Roman|Medium|Light|Semibold|SemiBold|Black|Book)+.*$/i, "")
-    .replace(/(MT|PS)$/, "").replace(/([a-z])([A-Z])/g, "$1 $2").trim() || name;
+    .replace(/(MT|PS)$/, "").replace(/([a-z])(?<!Deja)([A-Z])/g, "$1 $2").trim() || name; // "DejaVu" is one word
   return {
     family,
     bold: font.isBold() || /bold|black|heavy|semibold/i.test(name),
     italic: font.isItalic() || /italic|oblique/i.test(name),
     mono: font.isMono?.() || /mono|courier|consolas|code/i.test(name),
+    serif: font.isSerif?.() ?? false,
   };
 }
 
@@ -508,6 +509,21 @@ function joinRows(lines) {
   return lines.filter((l) => out.includes(l));
 }
 
+/** Inline code's background (the grey pill behind `getInstance()` in a sentence), kept on its
+ * characters as `bg`. A line that is all code is a listing: its box becomes a table instead. */
+function shadeInlineCode(lines, { shapes, boxes }) {
+  const fills = [...shapes.filter((s) => s.closed && s.fill).map((s) => ({ rect: s.bbox, color: s.fill })), ...boxes]
+    .filter((f) => f.color !== "#ffffff");
+  for (const line of lines) {
+    if (line.chars.every((c) => !c.c.trim() || c.font.mono)) continue;
+    for (const c of line.chars) {
+      if (!c.font.mono) continue;
+      const pill = fills.find(({ rect }) => rect[3] - rect[1] < c.size * 2.5 && inside(rect, [(c.x0 + c.x1) / 2, c.baseline - c.size * 0.3]));
+      if (pill) c.bg = pill.color;
+    }
+  }
+}
+
 // ---------- headers and footers ----------
 
 const normalized = (text) => text.replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
@@ -556,7 +572,7 @@ function bandsOf(pages) {
  * @param {Uint8Array} bytes
  * @returns {{pages: {width: number, height: number, lines: object[], images: object[], tables: object[], rules: object[]}[],
  *   header: {text: string, line: object, page: object}[], footer: {text: string, line: object, page: object}[]}}
- *   lines are {bbox, block, text, chars: [{c, font: {family, bold, italic, mono}, size, color, x0, x1, baseline}]}
+ *   lines are {bbox, block, text, chars: [{c, font: {family, bold, italic, mono, serif}, size, color, x0, x1, baseline, bg?}]}
  */
 export function analyzePdf(bytes) {
   const doc = mupdf.Document.openDocument(bytes, "application/pdf");
@@ -568,6 +584,7 @@ export function analyzePdf(bytes) {
       const [x0, y0, x1, y1] = page.getBounds();
       const content = contentOf(page);
       const vectors = vectorsOf(page);
+      shadeInlineCode(content.lines, vectors);
       const pageArea = (x1 - x0) * (y1 - y0);
       const found = figuresOf(vectors, content.lines, pageArea)
         .map(([a, b, c, d]) => [Math.max(x0, a - 2), Math.max(y0, b - 2), Math.min(x1, c + 2), Math.min(y1, d + 2)]);
