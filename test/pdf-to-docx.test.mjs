@@ -295,3 +295,40 @@ test("a heading whose rule lines up with a ruled table's rows isn't pulled into 
   assert.ok(pages[0].lines.some((l) => l.text === "3 Factory Method"), "the heading is free text");
   assert.ok(pages[0].tables.every((t) => t.bbox[3] < 600), "the table ends above it");
 });
+
+/** A PDF of 600x800 pages; `lines[p]` is how many body lines page p has (from the top), and
+ * `footer(p)` the footer text of page p, if any. */
+async function pagedPdf(lines, footer = () => null) {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  lines.forEach((n, p) => {
+    const page = doc.addPage([600, 800]);
+    for (let i = 0; i < n; i++) page.drawText(`Line ${i + 1} of page ${p + 1}.`, { x: 72, y: 720 - i * 16, size: 11, font: helv });
+    const text = footer(p);
+    if (text) page.drawText(text, { x: 72, y: 30, size: 9, font: helv });
+  });
+  return doc.save();
+}
+
+test("an unnumbered cover: the footer's page number starts at 1 on page 2, and the cover has no footer", async () => {
+  const bytes = await pagedPdf([3, 40, 40], (p) => (p ? `Page ${p} of 2` : null));
+
+  const { body, footers, text } = await partsOf(await pdfToDocx(bytes));
+
+  assert.match(footers, /PAGE/, "a live page number");
+  assert.match(footers, /SECTIONPAGES/, "counting the numbered pages only");
+  assert.ok(!text.includes("Page 1 of 2"), "not the literal text");
+  const sections = body.match(/<w:sectPr[\s\S]*?<\/w:sectPr>/g);
+  assert.equal(sections.length, 2, "the cover is a section of its own");
+  assert.ok(!/footerReference/.test(sections[0]), "without a footer");
+  assert.match(sections[1], /<w:pgNumType w:start="1"\/>/, "numbering starts at 1 after it");
+});
+
+test("full pages flow on; a page that ended early keeps its page break", async () => {
+  const bytes = await pagedPdf([40, 15, 40]);
+
+  const { body } = await partsOf(await pdfToDocx(bytes));
+
+  const breaks = [...body.matchAll(/<w:pageBreakBefore\/>[\s\S]*?<w:t[^>]*>(Line \d+ of page \d+\.)/g)].map((m) => m[1]);
+  assert.deepEqual(breaks, ["Line 1 of page 3."], "page 2 flows on from page 1; page 3 starts fresh");
+});

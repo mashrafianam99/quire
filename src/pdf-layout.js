@@ -679,7 +679,7 @@ const normalized = (text) => text.replace(/\d+/g, "#").replace(/\s+/g, " ").trim
 
 /** Lines in the top/bottom band that repeat on most pages: removed from the pages, returned once. */
 function bandsOf(pages) {
-  const bands = { header: [], footer: [] };
+  const bands = { header: [], footer: [], from: 0 };
   if (pages.length < 2) return bands;
   const where = (p, l) => (l.bbox[3] < p.height * BAND ? "header" : l.bbox[1] > p.height * (1 - BAND) ? "footer" : null);
   const keyOf = (p, l) => where(p, l) && `${where(p, l)}|${normalized(l.text)}`;
@@ -694,11 +694,21 @@ function bandsOf(pages) {
     const key = keyOf(p, l);
     if (repeated.has(key)) numbersOf.set(key, [...(numbersOf.get(key) ?? []), { page: i, numbers: (l.text.match(/\d+/g) ?? []).map(Number) }]);
   }));
-  /** A number that is this page's number on every page becomes {PAGE}; the page count, {NUMPAGES}. */
+  // the bands start on the first page that has one (a cover often has none)
+  bands.from = numbersOf.size ? Math.min(...[...numbersOf.values()].map((seen) => seen[0].page)) : 0;
+  /** A number that is the page's index plus a constant on every page becomes {PAGE} (its value on the
+   * first band page is `bands.start`); the page count becomes {NUMPAGES}, or {SECTIONPAGES} when it
+   * counts only the pages from the first band page on. */
   const fieldAt = (key, k) => {
     const seen = numbersOf.get(key);
-    if (seen.every((s) => s.numbers[k] === s.page + 1) && new Set(seen.map((s) => s.numbers[k])).size > 1) return "{PAGE}";
+    const offset = seen[0].numbers[k] - seen[0].page;
+    if (seen.every((s) => s.numbers[k] === s.page + offset) && new Set(seen.map((s) => s.numbers[k])).size > 1
+      && bands.from + offset >= 0) {
+      bands.start = bands.from + offset;
+      return "{PAGE}";
+    }
     if (seen.every((s) => s.numbers[k] === pages.length)) return "{NUMPAGES}";
+    if (seen.every((s) => s.numbers[k] === pages.length - bands.from)) return "{SECTIONPAGES}";
     return null;
   };
   pages.forEach((p) => {
@@ -720,8 +730,10 @@ function bandsOf(pages) {
 /**
  * @param {Uint8Array} bytes
  * @returns {{pages: {width: number, height: number, lines: object[], images: object[], tables: object[], rules: object[]}[],
- *   header: {text: string, line: object, page: object}[], footer: {text: string, line: object, page: object}[]}}
- *   lines are {bbox, block, text, chars: [{c, font: {family, bold, italic, mono, serif}, size, color, x0, x1, baseline, bg?}]}
+ *   header: {text: string, line: object, page: object}[], footer: {text: string, line: object, page: object}[],
+ *   from: number, start?: number}} from: index of the first page with a header/footer line; start:
+ *   the printed page number there, when {PAGE} was found
+ *   lines are {bbox, block, text, chars: [{c, font: {family, bold, italic, mono, serif}, size, color, x0, x1, baseline, bg?, badge?}]}
  */
 export function analyzePdf(bytes) {
   const doc = mupdf.Document.openDocument(bytes, "application/pdf");
@@ -742,6 +754,10 @@ export function analyzePdf(bytes) {
       // a figure covering much of the page is artwork behind the text: it's pictured without its
       // text, and the text stays editable on top. A smaller one (a diagram) is pictured whole.
       const isBackground = (f) => (f[2] - f[0]) * (f[3] - f[1]) > pageArea * BACKGROUND_SHARE;
+      // background art is pictured as the whole page: the fill it sits on (often a gradient, which
+      // isn't measured) reaches past the marks that make it a figure.
+      // shortcut: tables or boxes on such a page are pictured in it too, behind their Word copies
+      found.forEach((f, i) => { if (isBackground(f)) found[i] = [x0, y0, x1, y1]; });
       const diagrams = found.filter((f) => !isBackground(f));
       const inDiagram = (b) => diagrams.some((f) => inside(f, center(b)));
       const inAnyFigure = (b) => found.some((f) => inside(f, center(b)));
