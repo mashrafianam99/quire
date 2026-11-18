@@ -261,6 +261,18 @@ function cluster(values) {
   return out.map((g) => g.reduce((a, b) => a + b, 0) / g.length);
 }
 
+const CORNER = 8; // pt; the straight sides of a rounded frame stop this short of each other
+
+/** Whether a horizontal and a vertical segment end at the same rounded corner. */
+const corner = (s, t) => {
+  const [h, v] = s.dir === "h" ? [s, t] : [t, s];
+  if (h.dir !== "h" || v.dir !== "v") return false;
+  const dx = Math.min(Math.abs(h.from - v.at), Math.abs(h.to - v.at));
+  const dy = Math.min(Math.abs(v.from - h.at), Math.abs(v.to - h.at));
+  // a round corner cuts both sides by its radius; boxes side by side are apart in one direction only
+  return dx <= CORNER && dy <= CORNER && Math.abs(dx - dy) <= NEAR;
+};
+
 /** Groups of segments that touch each other (union-find on their boxes). */
 function connected(segments) {
   const parent = segments.map((_, i) => i);
@@ -270,7 +282,8 @@ function connected(segments) {
   for (let i = 0; i < segments.length; i++) {
     for (let j = i + 1; j < segments.length; j++) {
       const [a, b] = [boxes[i], boxes[j]];
-      if (a[0] - NEAR <= b[2] && b[0] - NEAR <= a[2] && a[1] - NEAR <= b[3] && b[1] - NEAR <= a[3]) parent[find(i)] = find(j);
+      const touch = a[0] - NEAR <= b[2] && b[0] - NEAR <= a[2] && a[1] - NEAR <= b[3] && b[1] - NEAR <= a[3];
+      if (touch || corner(segments[i], segments[j])) parent[find(i)] = find(j);
     }
   }
   const groups = new Map();
@@ -285,9 +298,17 @@ function tablesOf(segments, boxes) {
     const hs = group.filter((s) => s.dir === "h");
     const vs = group.filter((s) => s.dir === "v");
     if (hs.length < 2 || vs.length < 2) continue;
-    const xs = cluster(vs.map((s) => s.at));
+    const outer = cluster(vs.map((s) => s.at));
     const ys = cluster(hs.map((s) => s.at));
-    if (xs.length < 2 || ys.length < 2) continue;
+    if (outer.length < 2 || ys.length < 2) continue;
+    // a table drawn cell by cell with no column lines: its columns are where the row lines' pieces
+    // meet (on at least two row lines; a rounded frame's sides start a corner's width inside).
+    // With column lines, pieces meeting over a merged cell are just borders drawn cell by cell.
+    const unruled = outer.length === 2;
+    const jointOn = (y, x) => unruled && hs.some((s) => Math.abs(s.at - y) <= NEAR && Math.abs(s.from - x) <= NEAR);
+    const joints = !unruled ? [] : cluster(hs.map((s) => s.from).filter((x) => x > outer[0] + CORNER && x < outer.at(-1) - CORNER))
+      .filter((x) => ys.filter((y) => jointOn(y, x)).length >= 2);
+    const xs = cluster([...outer, ...joints]);
     /** The line along `at` from `from` to `to`, if drawn (in one piece or several, as cell by cell). */
     const edge = (list, at, from, to) => {
       const parts = list.filter((s) => Math.abs(s.at - at) <= NEAR && Math.min(s.to, to) > Math.max(s.from, from));
@@ -304,7 +325,8 @@ function tablesOf(segments, boxes) {
       for (let c = 0; c < xs.length - 1; c++) {
         if (taken.has(`${r}:${c}`)) continue;
         let colSpan = 1;
-        while (c + colSpan < xs.length - 1 && !edge(vs, xs[c + colSpan], ys[r], ys[r + 1])) colSpan++;
+        const split = (x) => edge(vs, x, ys[r], ys[r + 1]) || jointOn(ys[r], x) || jointOn(ys[r + 1], x);
+        while (c + colSpan < xs.length - 1 && !split(xs[c + colSpan])) colSpan++;
         let rowSpan = 1;
         while (r + rowSpan < ys.length - 1 && !edge(hs, ys[r + rowSpan], xs[c], xs[c + colSpan])) rowSpan++;
         for (let i = 0; i < rowSpan; i++) for (let j = 0; j < colSpan; j++) taken.add(`${r + i}:${c + j}`);
@@ -323,6 +345,8 @@ function tablesOf(segments, boxes) {
         });
       }
     }
+    // a rounded box isn't a table: boxTablesOf keeps it with its fill and the coloured bars inside
+    if (cells.length === 1 && hs.every((h) => h.from > xs[0] + NEAR)) continue;
     tables.push({ bbox: [xs[0], ys[0], xs.at(-1), ys.at(-1)], xs, ys, cells, segments: group });
   }
   return tables;
@@ -331,6 +355,7 @@ function tablesOf(segments, boxes) {
 const RULED_MIN_WIDTH = 100; // pt; row lines/bars narrower than this don't make a table
 const RULED_EDGE_SLACK = 10; // pt; a rounded outer border starts its straight part a little inside
 const RULED_MAX_ROW = 120; // pt; a taller gap between row lines ends the table
+const ROW_MIN = 4; // pt; edges closer than this bound no row
 
 /**
  * Tables drawn without column lines (the common "zebra" style): rows marked by stacked horizontal
@@ -348,21 +373,72 @@ function joinPieces(pieces) {
   return out;
 }
 
+const DOT = 1.5; // pt; marks this small, in a row, are the dots of a dotted line
+const DOTS_MIN = 10; // fewer dots in a row aren't a line
+
+/** Dotted horizontal lines (each dot drawn as its own tiny mark) joined into one segment each.
+ * shortcut: horizontal only; dotted column lines are rare. */
+function dottedLines(segments) {
+  const dots = segments.filter((s) => s.to - s.from <= DOT)
+    .map((s) => ({ ...s, x: s.dir === "h" ? (s.from + s.to) / 2 : s.at, y: s.dir === "h" ? s.at : (s.from + s.to) / 2 }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const runs = [];
+  for (const d of dots) {
+    const run = runs.find((r) => Math.abs(r.y - d.y) <= 0.5 && d.x - r.to <= DOT * 2);
+    if (run) { run.to = d.x; run.n++; } else runs.push({ y: d.y, from: d.x, to: d.x, n: 1, dot: d });
+  }
+  return runs.filter((r) => r.n >= DOTS_MIN)
+    .map((r) => ({ dir: "h", at: r.y, from: r.from, to: r.to, width: r.dot.width, color: r.dot.color }));
+}
+
+const UNDERLINE_GAP = 5; // pt; text ending this close above a line is underlined by it
+
+/** Lines a ruled table's rows hang under (an underlined list): the text just above its first line,
+ * a line at a time upwards, is its first row. Returns that row's top, or null. */
+function firstRowTop(ys, x0, x1, lines) {
+  const across = lines.filter((l) => l.bbox[0] >= x0 - NEAR && l.bbox[2] <= x1 + NEAR);
+  const under = (y) => across.filter((l) => y - l.bbox[3] >= 0 && y - l.bbox[3] <= UNDERLINE_GAP);
+  if (!ys.every((y) => under(y).length)) return null;
+  let row = under(ys[0]);
+  for (let more = row; more.length;) {
+    const top = Math.min(...row.map((l) => l.bbox[1]));
+    more = across.filter((l) => !row.includes(l) && top - l.bbox[3] >= -1 && top - l.bbox[3] <= UNDERLINE_GAP);
+    row = [...row, ...more];
+  }
+  const pad = ys[0] - Math.max(...row.map((l) => l.bbox[3]));
+  return Math.min(...row.map((l) => l.bbox[1])) - pad;
+}
+
 function ruledTablesOf(segments, boxes, lines) {
-  const rows = boxes.filter((b) => b.color !== "#ffffff" && b.rect[3] - b.rect[1] < RULED_MAX_ROW);
+  // (a bar no wider than an accent bar is a frame's side, not a row)
+  const rows = boxes.filter((b) => b.color !== "#ffffff" && b.rect[3] - b.rect[1] < RULED_MAX_ROW && b.rect[2] - b.rect[0] > BAR);
   const edges = joinPieces([
-    ...segments.filter((s) => s.dir === "h").map((s) => ({ at: s.at, from: s.from, to: s.to, line: s })),
+    ...[...segments, ...dottedLines(segments)].filter((s) => s.dir === "h").map((s) => ({ at: s.at, from: s.from, to: s.to, line: s })),
     ...rows.flatMap((b) => [{ at: b.rect[1], from: b.rect[0], to: b.rect[2] }, { at: b.rect[3], from: b.rect[0], to: b.rect[2] }]),
   ]).filter((e) => e.to - e.from >= RULED_MIN_WIDTH).sort((a, b) => a.at - b.at);
   // runs of edges with the same left and right ends, stacked without big gaps
-  const groups = [];
+  const stacks = [];
   for (const e of edges) {
-    const g = groups.find((x) => Math.abs(x.from - e.from) <= RULED_EDGE_SLACK && Math.abs(x.to - e.to) <= RULED_EDGE_SLACK && e.at - x.edges.at(-1).at <= RULED_MAX_ROW);
-    if (g) g.edges.push(e); else groups.push({ from: e.from, to: e.to, edges: [e] });
+    const g = stacks.find((x) => Math.abs(x.from - e.from) <= RULED_EDGE_SLACK && Math.abs(x.to - e.to) <= RULED_EDGE_SLACK && e.at - x.edges.at(-1).at <= RULED_MAX_ROW);
+    if (g) g.edges.push(e); else stacks.push({ from: e.from, to: e.to, edges: [e] });
+  }
+  // stacks side by side on the same rows (a two-column list) are one table
+  const sameRows = (a, b) => {
+    const [ya, yb] = [cluster(a.edges.map((e) => e.at)), cluster(b.edges.map((e) => e.at))];
+    return ya.length === yb.length && ya.every((y, i) => Math.abs(y - yb[i]) <= NEAR);
+  };
+  const groups = [];
+  for (const s of [...stacks].sort((a, b) => a.from - b.from)) {
+    const g = groups.find((x) => s.from > x.to && s.from - x.to <= ROW_GAP_MAX && sameRows(x, s));
+    if (g) Object.assign(g, { to: s.to, edges: [...g.edges, ...s.edges].sort((a, b) => a.at - b.at) });
+    else groups.push({ ...s });
   }
   const tables = [];
   for (const g of groups) {
-    const ys = cluster(g.edges.map((e) => e.at));
+    // a sliver between two edges (a frame's thick top over the header bar) isn't a row
+    const ys = cluster(g.edges.map((e) => e.at)).filter((y, i, all) => i === 0 || y - all[i - 1] > ROW_MIN);
+    const top =g.edges.every((e) => e.line) ? firstRowTop(ys, g.from, g.to, lines) : null;
+    if (top !== null) ys.unshift(top);
     if (ys.length < 3) continue;
     const bbox = [g.from, ys[0], g.to, ys.at(-1)];
     const rowOf = (l) => ys.findIndex((y, i) => i < ys.length - 1 && center(l.bbox)[1] >= y && center(l.bbox)[1] <= ys[i + 1]);

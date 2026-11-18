@@ -87,6 +87,43 @@ test("a table drawn as rows (no column lines) becomes a Word table", async () =>
   assert.match(body, /<w:tbl>[\s\S]*Singleton[\s\S]*One instance[\s\S]*<\/w:tbl>/);
 });
 
+test("a table drawn cell by cell in a rounded frame, with no column lines, keeps its columns", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const grey = rgb(0.89, 0.89, 0.86);
+  const [x0, x1, top, r] = [72, 472, 700, 6];
+  const cols = [72, 172, 302, 472];
+  const rows = [["Family", "Concerned with", "Patterns"], ["Creational", "Creation", "Singleton"],
+    ["Structural", "Composition", "Adapter"], ["Behavioral", "Communication", "Observer"]];
+  const rowH = 30;
+  const bottom = top - rowH * rows.length;
+  // the rounded frame's straight sides stop a corner's radius short of each other
+  page.drawLine({ start: { x: x0 + r, y: top }, end: { x: x1 - r, y: top }, thickness: 0.7, color: grey });
+  page.drawLine({ start: { x: x0 + r, y: bottom }, end: { x: x1 - r, y: bottom }, thickness: 0.7, color: grey });
+  page.drawLine({ start: { x: x0, y: top - r }, end: { x: x0, y: bottom + r }, thickness: 0.7, color: grey });
+  page.drawLine({ start: { x: x1, y: top - r }, end: { x: x1, y: bottom + r }, thickness: 0.7, color: grey });
+  rows.forEach((texts, i) => {
+    const y = top - rowH * (i + 1);
+    for (let c = 0; c < 3; c++) {
+      if (i === 0) page.drawRectangle({ x: cols[c], y, width: cols[c + 1] - cols[c], height: rowH, color: rgb(0.24, 0.35, 0.54) });
+      if (i === 2) page.drawRectangle({ x: cols[c], y, width: cols[c + 1] - cols[c], height: rowH, color: rgb(0.97, 0.96, 0.95) });
+      // each row line is drawn cell by cell: its pieces meet at the column boundaries
+      if (i < rows.length - 1) page.drawLine({ start: { x: cols[c], y }, end: { x: cols[c + 1], y }, thickness: 0.7, color: grey });
+      page.drawText(texts[c], { x: cols[c] + 8, y: y + 10, size: 11, font: helv, color: i === 0 ? rgb(1, 1, 1) : rgb(0, 0, 0) });
+    }
+  });
+  const bytes = await doc.save();
+
+  const [table, ...rest] = analyzePdf(bytes).pages[0].tables;
+  assert.equal(rest.length, 0, "the header is part of the table, not a box of its own");
+  assert.equal(table.xs.length - 1, 3, "three columns");
+  assert.equal(table.ys.length - 1, 4, "four rows, the last closed by the frame");
+  const textAt = (row, col) => table.cells.find((c) => c.row === row && c.col === col)?.lines.map((l) => l.text).join(" ");
+  assert.deepEqual([0, 1, 2, 3].map((row) => [0, 1, 2].map((col) => textAt(row, col))), rows);
+  assert.ok(table.cells.find((c) => c.row === 0).fill, "the header keeps its fill");
+});
+
 const rounded = (w, h, r) => `M ${r} 0 H ${w - r} Q ${w} 0 ${w} ${r} V ${h - r} Q ${w} ${h} ${w - r} ${h} H ${r} Q 0 ${h} 0 ${h - r} V ${r} Q 0 0 ${r} 0 Z`;
 
 test("coloured boxes keep their fill (and accent bar) behind editable text; a highlight in a line isn't a box", async () => {
