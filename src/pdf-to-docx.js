@@ -30,6 +30,9 @@ const KEEP_ROW = 0.3; // share of the page height; a table row (a callout) up to
 const GUTTER = 6; // pt; items at least this far apart side by side are in columns of their own
 const RULE_REACH = 8; // pt; a fill-in line this close under text is on the text's row
 const LINE_HEIGHT = 1.15; // in font sizes; Word's single line
+const WORD_MAX_PAGE = 1584; // pt (22 in): Word's largest page side
+const MIN_MARGIN = 18; // pt
+const MAX_MARGIN_SHARE = 0.25; // of the page's width or height
 
 /** Free fonts that stand in for Office fonts, mapped back so Word shows the original look; and
  * web fonts Word doesn't have, mapped to the closest font it does. */
@@ -153,7 +156,7 @@ function runsOf(para, bodySize, { stripMark = false, pad = 0, keepGaps = false }
       const n = line.text.match(LIST_MARK)[0].length;
       chars = chars.slice(n);
     }
-    if (i > 0) {
+    if (i > 0 && runs.length) {
       const prevText = runs.at(-1)?.text ?? "";
       if (!/[-\s]$/.test(prevText)) runs.at(-1).text += " ";
     }
@@ -283,22 +286,23 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
 
 // ---------- pictures and tables ----------
 
-function imageOf(img, { left, right, before = 0, pageBreak = false }) {
+function imageOf(img, { left, right, before = 0, pageBreak = false, maxHeight = Infinity }) {
   const [x0, y0, x1, y1] = img.bbox;
-  const scale = Math.min(1, (right - left) / Math.max(1, x1 - x0)); // shortcut: wider than the column? shrink to fit
+  // bigger than the column or the page (a poster, a scan on an oversized page)? shrink to fit
+  const scale = Math.min(1, (right - left) / Math.max(1, x1 - x0), maxHeight / Math.max(1, y1 - y0));
   const centered = Math.abs((x0 + x1) / 2 - (left + right) / 2) < 6;
   return new Paragraph({
     alignment: centered ? AlignmentType.CENTER : AlignmentType.LEFT,
     indent: centered ? undefined : { left: Math.max(0, Math.round((x0 - left) * TW)) },
     pageBreakBefore: pageBreak || undefined,
     spacing: { before: Math.max(0, Math.round(before * TW)), after: 0 },
-    children: [new ImageRun({ type: "png", data: img.png,
+    children: [new ImageRun({ type: img.type, data: img.data,
       transformation: { width: Math.round((x1 - x0) * scale * PX), height: Math.round((y1 - y0) * scale * PX) } })],
   });
 }
 
 const backgroundOf = (img) => new ImageRun({
-  type: "png", data: img.png,
+  type: img.type, data: img.data,
   transformation: { width: Math.round((img.bbox[2] - img.bbox[0]) * PX), height: Math.round((img.bbox[3] - img.bbox[1]) * PX) },
   floating: {
     horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: Math.round(img.bbox[0] * EMU) },
@@ -554,14 +558,20 @@ export async function pdfToDocx(bytes) {
   const bodyChars = allLines.filter((l) => !isCode(l)).flatMap((l) => l.chars.filter((c) => c.c.trim()));
   const bodyFamily = mode(bodyChars.map((c) => c.font.family));
   const bodyFont = bodyChars.find((c) => c.font.family === bodyFamily)?.font ?? { family: "Arial" };
-  const first = pages[0] ?? { width: 612, height: 792 };
-  const left = allLines.length ? pct(allLines.map((l) => l.bbox[0]), 0.05) : 72;
+  const pdfFirst = pages[0] ?? { width: 612, height: 792 };
+  // shortcut: a page bigger than Word allows (a poster) is cut down to Word's largest, not scaled
+  const first = { width: Math.min(pdfFirst.width, WORD_MAX_PAGE), height: Math.min(pdfFirst.height, WORD_MAX_PAGE) };
+  // margins come from the free text; when there's little of it (a page of tables under a centred
+  // title, scans with a stamp at the foot), they're kept to a share of the page so there is room left
+  const [maxX, maxY] = [first.width * MAX_MARGIN_SHARE, first.height * MAX_MARGIN_SHARE];
+  const left = Math.min(maxX, allLines.length ? pct(allLines.map((l) => l.bbox[0]), 0.05) : 72);
   const textRight = allLines.length ? pct(allLines.map((l) => l.bbox[2]), 0.95) : first.width - 72;
-  const right = Math.max(textRight, ...pages.flatMap((p) => p.tables.map((t) => t.bbox[2]))); // tables fit inside the margins
+  const right = Math.min(first.width - MIN_MARGIN, // tables fit inside the margins
+    Math.max(first.width - maxX, textRight, ...pages.flatMap((p) => p.tables.map((t) => t.bbox[2]))));
   const firstTops = pages.map((p) => Math.min(...p.lines.map((l) => l.bbox[1]), ...p.images.filter((i) => !i.background).map((i) => i.bbox[1])));
-  const top = Math.max(18, allLines.length ? Math.min(pct(allLines.map((l) => l.bbox[1]), 0.02), pct(firstTops, 0.5)) - 4 : 72);
+  const top = Math.min(maxY, Math.max(18, allLines.length ? Math.min(pct(allLines.map((l) => l.bbox[1]), 0.02), pct(firstTops, 0.5)) - 4 : 72));
   // Word's last line reaches lower than the PDF's line box: half a line of room for it
-  const bottom = Math.max(18, allLines.length ? first.height - pct(allLines.map((l) => l.bbox[3]), 0.98) - 4 - bodySize / 2 : 72);
+  const bottom = Math.min(maxY, Math.max(18, allLines.length ? first.height - pct(allLines.map((l) => l.bbox[3]), 0.98) - 4 - bodySize / 2 : 72));
 
   const starts = allLines.map((l) => l.bbox[0]);
   const isIndent = (x) => starts.filter((s) => Math.abs(s - x) <= 1.5).length >= 3;
@@ -626,7 +636,7 @@ export async function pdfToDocx(bytes) {
         const keepNext = !!prev?.para && !!headingOf(prev.para, bodySize) && item.top < prev.bottom;
         children.push(...paragraphOf(item.para, ctx, { left, right, before, pageBreak: breaks, framed, keepNext }));
       } else if (item.img) {
-        children.push(imageOf(item.img, { left, right, before, pageBreak: breaks }));
+        children.push(imageOf(item.img, { left, right, before, pageBreak: breaks, maxHeight: Math.max(MIN_MARGIN, first.height - top - bottom) }));
       } else {
         // Word merges tables with nothing between them: only a header bar flush on its table may join
         const prev = entries[i - 1]?.table;
