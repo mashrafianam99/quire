@@ -17,6 +17,7 @@ const EMU = 12700; // EMU per point
 const LIST_MARK = /^\s*[•●○◦▪■▸►–\-*]\s+/;
 const LABEL = /^\s*(\(?[a-z0-9ivx]{1,3}[.)])(\s|\S)/i; // "(b)", "2.", "a)": a line starting so starts a paragraph
 const BULLETS = "bullets";
+const NEAR_JOIN = 2; // pt; a table this close under another, with the same edges, continues it in Word
 
 /** Free fonts that stand in for Office fonts, mapped back so Word shows the original look; and
  * web fonts Word doesn't have, mapped to the closest font it does. */
@@ -116,7 +117,7 @@ function runsOf(para, bodySize, { stripMark = false, pad = 0 } = {}) {
       // raised or lowered off the line's baseline (often smaller too, but not always)
       const shift = c.baseline - baseline;
       const script = c.c.trim() && shift < -c.size * 0.15 ? "sup" : c.c.trim() && shift > c.size * 0.12 ? "sub" : null;
-      const key = `${c.font.family}|${c.font.bold}|${c.font.italic}|${Math.round(c.size * 2)}|${c.color}|${script}|${c.bg}`;
+      const key = `${c.font.family}|${c.font.bold}|${c.font.italic}|${Math.round(c.size * 2)}|${c.color}|${script}|${c.badge ?? c.bg}`;
       if (runs.at(-1)?.key === key) runs.at(-1).text += c.c;
       else runs.push({ key, text: c.c, c, script });
     }
@@ -129,7 +130,8 @@ function runsOf(para, bodySize, { stripMark = false, pad = 0 } = {}) {
     bold: c.font.bold, italics: c.font.italic,
     color: c.color === "#000000" ? undefined : c.color.slice(1),
     superScript: script === "sup", subScript: script === "sub",
-    shading: c.bg ? { type: ShadingType.CLEAR, fill: c.bg.slice(1), color: "auto" } : undefined,
+    // a badge's or inline code's fill; shortcut: a round badge becomes a square of shading behind its letter
+    shading: (c.badge ?? c.bg) ? { type: ShadingType.CLEAR, fill: (c.badge ?? c.bg).slice(1), color: "auto" } : undefined,
   }));
 }
 
@@ -332,7 +334,11 @@ export async function pdfToDocx(bytes) {
       } else if (item.img) {
         children.push(imageOf(item.img, { left, right, before, pageBreak }));
       } else {
-        if (pageBreak || before > 6) children.push(new Paragraph({ pageBreakBefore: pageBreak || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
+        // Word merges tables with nothing between them: only a header bar flush on its table may join
+        const prev = items[i - 1]?.table;
+        const joins = prev && before <= NEAR_JOIN && Math.abs(prev.bbox[0] - item.table.bbox[0]) <= NEAR_JOIN
+          && Math.abs(prev.bbox[2] - item.table.bbox[2]) <= NEAR_JOIN;
+        if (pageBreak || before > 6 || (prev && !joins)) children.push(new Paragraph({ pageBreakBefore: pageBreak || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
         children.push(tableOf(item.table, ctx));
       }
       y = Math.max(y, item.bottom);
