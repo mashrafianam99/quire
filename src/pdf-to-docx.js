@@ -2,10 +2,11 @@
 // shows; this rebuilds it with the docx library as flowing Word content: paragraphs (lines joined
 // back), headings, bold/italic/colour/size, super/subscript, bullets, indents and alignment, rules
 // as paragraph borders, pictures (diagrams pictured whole, artwork placed behind the text), real
-// Word tables with merged cells, borders and shading, page size and margins, a page break per PDF
-// page, and the running header/footer with live page numbers.
+// Word tables with merged cells, borders and shading, page size and margins, page breaks where a PDF
+// page starts something new (elsewhere the content flows on), and the running header/footer with
+// live page numbers (a cover without them gets a section of its own).
 import {
-  AlignmentType, BorderStyle, Document, Footer, Header, HeadingLevel, HorizontalPositionRelativeFrom, ImageRun,
+  AlignmentType, BorderStyle, Document, Footer, FrameAnchorType, Header, HeadingLevel, HorizontalPositionRelativeFrom, ImageRun,
   LevelFormat, Packer, PageNumber, Paragraph, ShadingType, Table, TableCell, TableLayoutType, TableRow, TextRun,
   VerticalPositionRelativeFrom, WidthType,
 } from "docx";
@@ -17,6 +18,10 @@ const EMU = 12700; // EMU per point
 const LIST_MARK = /^\s*[•●○◦▪■▸►–\-*]\s+/;
 const LABEL = /^\s*(\(?[a-z0-9ivx]{1,3}[.)])(\s|\S)/i; // "(b)", "2.", "a)": a line starting so starts a paragraph
 const BULLETS = "bullets";
+const FRAME_SLACK = 1.15; // a framed paragraph's room for a wider stand-in font
+const FRESH_GAP = 0.15; // a page that ended this share of its height early: the next starts on a fresh page
+const SPACE_WIDTH = 0.25; // a space is about this share of the font size
+const HEADING_SLACK = 0.5; // pt: a heading this close to the document's largest is a top-level one
 
 /** Free fonts that stand in for Office fonts, mapped back so Word shows the original look. */
 const FONT_NAMES = [
@@ -64,7 +69,7 @@ function paragraphsOf(lines) {
 }
 
 /** A paragraph's characters as Word runs: same font, size, colour and script run together. */
-function runsOf(para, bodySize, { stripMark = false } = {}) {
+function runsOf(para, bodySize, { stripMark = false, keepGaps = false } = {}) {
   const runs = [];
   para.lines.forEach((line, i) => {
     const baseline = mode(line.chars.map((c) => Math.round(c.baseline)));
@@ -77,22 +82,26 @@ function runsOf(para, bodySize, { stripMark = false } = {}) {
       const prevText = runs.at(-1)?.text ?? "";
       if (!/[-\s]$/.test(prevText)) runs.at(-1).text += " ";
     }
-    for (const c of chars) {
+    chars.forEach((c, j) => {
       // raised or lowered off the line's baseline (often smaller too, but not always)
       const shift = c.baseline - baseline;
       const script = c.c.trim() && shift < -c.size * 0.15 ? "sup" : c.c.trim() && shift > c.size * 0.12 ? "sub" : null;
       const key = `${c.font.family}|${c.font.bold}|${c.font.italic}|${Math.round(c.size * 2)}|${c.color}|${script}`;
-      if (runs.at(-1)?.key === key) runs.at(-1).text += c.c;
+      // a wide gap (a number badge before its text) is kept by widening the space
+      const gap = keepGaps && !c.c.trim() ? (chars[j + 1]?.x0 ?? c.x0) - c.x0 - c.size * SPACE_WIDTH : 0;
+      if (gap > c.size * SPACE_WIDTH) runs.push({ key: null, text: c.c, c, script, spacing: Math.round(gap * TW) });
+      else if (runs.at(-1)?.key === key) runs.at(-1).text += c.c;
       else runs.push({ key, text: c.c, c, script });
-    }
+    });
   });
-  return runs.filter((r) => r.text).map(({ text, c, script }) => new TextRun({
+  return runs.filter((r) => r.text).map(({ text, c, script, spacing }) => new TextRun({
     text: text.replace(/\s+/g, " "),
     font: wordFont(c.font.family),
     size: Math.round((script ? para.size : c.size) * 2),
     bold: c.font.bold, italics: c.font.italic,
     color: c.color === "#000000" ? undefined : c.color.slice(1),
     superScript: script === "sup", subScript: script === "sub",
+    characterSpacing: spacing,
   }));
 }
 
@@ -130,7 +139,19 @@ function headingOf(para, bodySize) {
 
 const borderOf = (s) => ({ style: BorderStyle.SINGLE, size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1), space: 1 });
 
-function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, extra = [] }) {
+/** A frame holding the paragraph where it is on the page, a little wider than its text so a
+ * stand-in font doesn't wrap it. */
+function frameOf(para, alignment, pageWidth) {
+  const [x0, y0, x1] = para.bbox;
+  const width = Math.min(pageWidth, (x1 - x0) * FRAME_SLACK + 6);
+  const x = alignment === AlignmentType.CENTER ? (x0 + x1 - width) / 2 : alignment === AlignmentType.RIGHT ? x1 - width : x0;
+  return {
+    type: "absolute", position: { x: Math.round(Math.max(0, x) * TW), y: Math.round(y0 * TW) },
+    width: Math.round(width * TW), anchor: { horizontal: FrameAnchorType.PAGE, vertical: FrameAnchorType.PAGE },
+  };
+}
+
+function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, framed = false }) {
   const listed = LIST_MARK.test(para.lines[0].text);
   const { alignment, indent } = layoutOf(para, left, right, ctx.isIndent);
   // a rule just under (or over) the paragraph is its border, as Word draws heading underlines
@@ -144,15 +165,16 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
   return new Paragraph({
     heading: listed ? undefined : headingOf(para, ctx.bodySize),
     alignment,
-    indent: listed ? undefined : indent,
+    indent: listed || framed ? undefined : indent,
+    frame: framed ? frameOf(para, alignment, ctx.pageWidth) : undefined,
     numbering: listed ? { reference: BULLETS, level: 0 } : undefined,
     pageBreakBefore: pageBreak || undefined,
     spacing: {
-      before: Math.max(0, Math.round(before * TW)), after: 0,
+      before: framed ? 0 : Math.max(0, Math.round(before * TW)), after: 0,
       ...(lineGaps.length ? { line: Math.round(mode(lineGaps.map(Math.round)) * TW), lineRule: "atLeast" } : {}),
     },
     border: under || over ? { ...(under ? { bottom: borderOf(under) } : {}), ...(over ? { top: borderOf(over) } : {}) } : undefined,
-    children: [...extra, ...runsOf(para, ctx.bodySize, { stripMark: listed })],
+    children: [...runsOf(para, ctx.bodySize, { stripMark: listed, keepGaps: framed })],
   });
 }
 
@@ -229,10 +251,10 @@ function bandParagraphs(band, left, right) {
     const c = line.chars.find((ch) => ch.c.trim()) ?? line.chars[0];
     const style = { font: wordFont(c.font.family), size: Math.round(c.size * 2), bold: c.font.bold, italics: c.font.italic,
       color: c.color === "#000000" ? undefined : c.color.slice(1) };
-    const children = text.split(/(\{PAGE\}|\{NUMPAGES\})/).filter(Boolean).map((part) => (part === "{PAGE}"
-      ? new TextRun({ ...style, children: [PageNumber.CURRENT] })
-      : part === "{NUMPAGES}" ? new TextRun({ ...style, children: [PageNumber.TOTAL_PAGES] })
-        : new TextRun({ ...style, text: part })));
+    const fields = { "{PAGE}": PageNumber.CURRENT, "{NUMPAGES}": PageNumber.TOTAL_PAGES, "{SECTIONPAGES}": PageNumber.TOTAL_PAGES_IN_SECTION };
+    const children = text.split(/(\{PAGE\}|\{NUMPAGES\}|\{SECTIONPAGES\})/).filter(Boolean).map((part) => (fields[part]
+      ? new TextRun({ ...style, children: [fields[part]] })
+      : new TextRun({ ...style, text: part })));
     const [x0, , x1] = line.bbox;
     const alignment = Math.abs((x0 + x1) / 2 - (left + right) / 2) < 8 ? AlignmentType.CENTER
       : Math.abs(x1 - right) < 8 ? AlignmentType.RIGHT : AlignmentType.LEFT;
@@ -247,7 +269,7 @@ function bandParagraphs(band, left, right) {
  * @returns {Promise<Uint8Array>} a .docx
  */
 export async function pdfToDocx(bytes) {
-  const { pages, header, footer } = analyzePdf(bytes);
+  const { pages, header, footer, from, start } = analyzePdf(bytes);
   const allLines = pages.flatMap((p) => p.lines);
   const bodySize = mode(allLines.flatMap((l) => l.chars.filter((c) => c.c.trim()).map((c) => Math.round(c.size * 2) / 2))) ?? 11;
   const first = pages[0] ?? { width: 612, height: 792 };
@@ -259,53 +281,80 @@ export async function pdfToDocx(bytes) {
 
   const starts = allLines.map((l) => l.bbox[0]);
   const isIndent = (x) => starts.filter((s) => Math.abs(s - x) <= 1.5).length >= 3;
-  const children = [];
+  const pageItems = pages.map((page) => [
+    ...paragraphsOf(page.lines).map((para) => ({ top: para.bbox[1], bottom: para.bbox[3], para })),
+    ...page.images.filter((img) => !img.background).map((img) => ({ top: img.bbox[1], bottom: img.bbox[3], img })),
+    ...page.tables.map((table) => ({ top: table.bbox[1], bottom: table.bbox[3], table })),
+  ].sort((a, b) => a.top - b.top)); // shortcut: one column; text in side-by-side columns is read row by row
+  const hasBackground = (p) => pages[p].images.some((img) => img.background);
+  const headingSize = Math.max(0, ...pageItems.flatMap((items, p) => (hasBackground(p) ? []
+    : items.filter((it) => it.para && headingOf(it.para, bodySize)).map((it) => it.para.size))));
+  /** Whether PDF page p clearly starts something new (a top-level heading, or the page before ended
+   * well short of its bottom), so it keeps its page break; elsewhere the content flows on. */
+  const startsFresh = (p) => {
+    if (hasBackground(p) || hasBackground(p - 1)) return true;
+    const lead = pageItems[p][0]?.para;
+    if (lead && headingOf(lead, bodySize) && lead.size >= headingSize - HEADING_SLACK) return true;
+    const prev = pages[p - 1];
+    const ended = Math.max(top, ...pageItems[p - 1].map((it) => it.bottom));
+    // the bottom margin is measured from the text, so a short document may not reach it; assume
+    // it's at least as deep as the top margin
+    const floor = prev.height - Math.min(top, bottom);
+    return ended < floor - prev.height * FRESH_GAP;
+  };
+
+  // pages before the first one with a header/footer (a cover) get a section of their own, without them
+  const split = (header.length || footer.length) && from > 0 ? from : 0;
+  const sectionChildren = [[], []];
   pages.forEach((page, p) => {
-    const ctx = { bodySize, rules: page.rules, isIndent, left };
-    const items = [
-      ...paragraphsOf(page.lines).map((para) => ({ top: para.bbox[1], bottom: para.bbox[3], para })),
-      ...page.images.filter((img) => !img.background).map((img) => ({ top: img.bbox[1], bottom: img.bbox[3], img })),
-      ...page.tables.map((table) => ({ top: table.bbox[1], bottom: table.bbox[3], table })),
-    ].sort((a, b) => a.top - b.top); // shortcut: one column; text in side-by-side columns is read row by row
-    const backgrounds = page.images.filter((img) => img.background).map(backgroundOf);
+    const children = sectionChildren[p < split ? 0 : 1];
+    const ctx = { bodySize, rules: page.rules, isIndent, left, pageWidth: page.width };
+    const framed = hasBackground(p); // text over artwork stays where it is on the page, so the page can't grow
+    let pageBreak = p > 0 && p !== split && startsFresh(p);
+    if (framed) {
+      children.push(new Paragraph({ pageBreakBefore: pageBreak || undefined,
+        children: page.images.filter((img) => img.background).map(backgroundOf) }));
+      pageBreak = false;
+    }
     let y = top;
-    items.forEach((item, i) => {
+    pageItems[p].forEach((item, i) => {
       const before = item.top - y;
-      const pageBreak = p > 0 && i === 0;
+      const breaks = pageBreak && i === 0;
       if (item.para) {
-        children.push(paragraphOf(item.para, ctx, { left, right, before, pageBreak, extra: i === 0 ? backgrounds : [] }));
+        children.push(paragraphOf(item.para, ctx, { left, right, before, pageBreak: breaks, framed }));
       } else if (item.img) {
-        children.push(imageOf(item.img, { left, right, before, pageBreak }));
+        children.push(imageOf(item.img, { left, right, before, pageBreak: breaks }));
       } else {
-        if (pageBreak || before > 6) children.push(new Paragraph({ pageBreakBefore: pageBreak || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
+        if (breaks || before > 6) children.push(new Paragraph({ pageBreakBefore: breaks || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
         children.push(tableOf(item.table, ctx));
       }
       y = Math.max(y, item.bottom);
     });
-    if (!items.length) children.push(new Paragraph({ pageBreakBefore: p > 0 || undefined, children: backgrounds }));
-    else if (backgrounds.length && !items[0].para) children.push(new Paragraph({ children: backgrounds }));
   });
 
+  const page = {
+    size: { width: Math.round(first.width * TW), height: Math.round(first.height * TW) },
+    margin: {
+      top: Math.round(top * TW), bottom: Math.round(bottom * TW),
+      left: Math.round(left * TW), right: Math.round(Math.max(18, first.width - right) * TW),
+      header: Math.round(Math.max(12, header[0]?.line.bbox[1] ?? 36) * TW),
+      footer: Math.round(Math.max(12, first.height - (footer.at(-1)?.line.bbox[3] ?? first.height - 36)) * TW),
+    },
+  };
   const doc = new Document({
     numbering: { config: [{ reference: BULLETS, levels: [{ level: 0, format: LevelFormat.BULLET, text: "•",
       alignment: AlignmentType.LEFT, style: { paragraph: { indent: { left: 360, hanging: 260 } } } }] }] },
     styles: { default: { document: { run: { size: Math.round(bodySize * 2) } } } },
-    sections: [{
-      properties: {
-        page: {
-          size: { width: Math.round(first.width * TW), height: Math.round(first.height * TW) },
-          margin: {
-            top: Math.round(top * TW), bottom: Math.round(bottom * TW),
-            left: Math.round(left * TW), right: Math.round(Math.max(18, first.width - right) * TW),
-            header: Math.round(Math.max(12, header[0]?.line.bbox[1] ?? 36) * TW),
-            footer: Math.round(Math.max(12, first.height - (footer.at(-1)?.line.bbox[3] ?? first.height - 36)) * TW),
-          },
-        },
+    sections: [
+      ...(split ? [{ properties: { page }, children: sectionChildren[0] }] : []),
+      {
+        // the PDF's own page numbers (a cover left unnumbered makes page 2 "Page 1")
+        properties: { page: start === undefined ? page : { ...page, pageNumbers: { start } } },
+        headers: header.length ? { default: new Header({ children: bandParagraphs(header, left, right) }) } : undefined,
+        footers: footer.length ? { default: new Footer({ children: bandParagraphs(footer, left, right) }) } : undefined,
+        children: sectionChildren[1],
       },
-      headers: header.length ? { default: new Header({ children: bandParagraphs(header, left, right) }) } : undefined,
-      footers: footer.length ? { default: new Footer({ children: bandParagraphs(footer, left, right) }) } : undefined,
-      children,
-    }],
+    ],
   });
   return new Uint8Array(await Packer.toArrayBuffer(doc));
 }
