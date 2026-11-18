@@ -121,3 +121,95 @@ test("coloured boxes keep their fill (and accent bar) behind editable text; a hi
   assert.ok(text.includes("A sentence with a highlighted word inside it."), "the highlighted line stays a paragraph");
   assert.ok(!/<w:tbl>(?:(?!<\/w:tbl>)[\s\S])*A sentence/.test(body), "and isn't put in a box");
 });
+
+// a dashed line drawn as one small filled rectangle per dash, each traced back to its start and closed
+const dashes = (x0, y0, x1, y1) => {
+  const [len, gap, w] = [3.6, 2.4, 1];
+  const out = [];
+  for (let t = 0; t < Math.hypot(x1 - x0, y1 - y0); t += len + gap) {
+    const [x, y] = x0 === x1 ? [x0, y0 + t] : [x0 + t, y0];
+    const [dx, dy] = x0 === x1 ? [w, len] : [len, w];
+    out.push(`M ${x} ${y} L ${x} ${y + dy} L ${x + dx} ${y + dy} L ${x + dx} ${y} L ${x} ${y} Z`);
+  }
+  return out.join(" ");
+};
+
+test("a UML diagram whose dashed connectors reach bordered class boxes is one picture, not tables", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const black = rgb(0, 0, 0);
+  page.drawRectangle({ x: 200, y: 640, width: 100, height: 40, borderColor: black, borderWidth: 1 });
+  page.drawText("Factory", { x: 225, y: 655, size: 10, font: helv });
+  // inheritance triangle under the interface, then dashed lines down to the two classes (SVG y runs down from y 800)
+  page.drawSvgPath("M 250 160 L 244 172 L 256 172 Z", { x: 0, y: 800, color: rgb(1, 1, 1), borderColor: black, borderWidth: 1 });
+  page.drawSvgPath([dashes(250, 172, 250, 190), dashes(150, 190, 350, 190), dashes(150, 190, 150, 250), dashes(350, 190, 350, 250)].join(" "),
+    { x: 0, y: 800, color: black });
+  for (const [x, name] of [[105, "WinFactory"], [305, "MacFactory"]]) {
+    page.drawRectangle({ x, y: 500, width: 90, height: 50, borderColor: black, borderWidth: 1 });
+    page.drawLine({ start: { x, y: 532 }, end: { x: x + 90, y: 532 }, thickness: 1 });
+    page.drawText(name, { x: x + 10, y: 538, size: 9, font: helv });
+    page.drawText("+ create()", { x: x + 10, y: 515, size: 9, font: helv });
+  }
+  const bytes = await doc.save();
+
+  const { pages } = analyzePdf(bytes);
+  assert.equal(pages[0].images.filter((i) => i.figure).length, 1, "one picture for the whole diagram");
+  assert.equal(pages[0].tables.length, 0, "the class boxes aren't tables");
+  assert.ok(!pages[0].lines.some((l) => /Factory/.test(l.text)), "the class names are in the picture");
+});
+
+test("drawn bullet dots become a Word list, and a white letter on a round badge keeps the badge's colour", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const ink = rgb(0.2, 0.2, 0.2);
+  page.drawCircle({ x: 79, y: 704, size: 7, color: rgb(0.24, 0.35, 0.54) });
+  page.drawText("D", { x: 75.5, y: 700, size: 9, font: helv, color: rgb(1, 1, 1) });
+  page.drawText("DEFINITION", { x: 92, y: 700, size: 9, font: helv, color: rgb(0.24, 0.35, 0.54) });
+  for (const [i, item] of ["One object of a class is needed.", "You need stricter control."].entries()) {
+    const y = 660 - i * 24;
+    page.drawCircle({ x: 76, y: y + 4, size: 1.9, color: ink });
+    page.drawText(item, { x: 86, y, size: 12, font: helv, color: ink });
+  }
+  const bytes = await doc.save();
+
+  const { body, text } = await partsOf(await pdfToDocx(bytes));
+  assert.equal((body.match(/<w:numPr>/g) ?? []).length, 2, "both items are bullets");
+  assert.ok(text.includes("One object of a class is needed.") && !text.includes("•"), "the mark is Word's, not typed");
+  assert.match(body, /<w:shd [^>]*w:fill="3d5.8a"[^>]*\/>[\s\S]{0,300}?<w:t[^>]*>D<\/w:t>/i, "the badge letter is shaded");
+});
+
+test("tables one under another stay separate tables in Word", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const grid = (x, y, w, cols) => {
+    for (const dy of [0, 20, 40]) page.drawLine({ start: { x, y: y - dy }, end: { x: x + w, y: y - dy }, thickness: 1 });
+    for (let c = 0; c <= cols; c++) page.drawLine({ start: { x: x + (c * w) / cols, y }, end: { x: x + (c * w) / cols, y: y - 40 }, thickness: 1 });
+    for (let r = 0; r < 2; r++) for (let c = 0; c < cols; c++) page.drawText(`r${r}c${c}`, { x: x + (c * w) / cols + 4, y: y - 14 - r * 20, size: 9, font: helv });
+  };
+  grid(72, 700, 200, 2);
+  grid(72, 655, 300, 3); // 5pt below the first, a different width
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  assert.equal((body.match(/<w:tbl>/g) ?? []).length, 2);
+  assert.doesNotMatch(body, /<\/w:tbl><w:tbl>/, "a paragraph between them, or Word merges them");
+});
+
+test("a heading whose rule lines up with a ruled table's rows isn't pulled into the table", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const rule = (y) => page.drawLine({ start: { x: 72, y }, end: { x: 472, y }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+  [["Pattern", "Purpose"], ["Singleton", "One instance"], ["Builder", "Step by step"]].forEach(([a, b], i) => {
+    page.drawText(a, { x: 80, y: 700 - i * 30, size: 11, font: helv });
+    page.drawText(b, { x: 240, y: 700 - i * 30, size: 11, font: helv });
+    rule(700 - i * 30 + 21);
+  });
+  rule(631);
+  page.drawText("3 Factory Method", { x: 80, y: 590, size: 16, font: helv });
+  rule(580); // the heading's underline, as wide as the table
+  const { pages } = analyzePdf(await doc.save());
+  assert.ok(pages[0].lines.some((l) => l.text === "3 Factory Method"), "the heading is free text");
+  assert.ok(pages[0].tables.every((t) => t.bbox[3] < 600), "the table ends above it");
+});

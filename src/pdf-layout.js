@@ -52,7 +52,9 @@ const closedPath = (pts) => {
 const slanted = (pts) => pts.some((p, i) => i > 0 && (!p || !pts[i - 1]
   || (Math.abs(p[0] - pts[i - 1][0]) > 0.5 && Math.abs(p[1] - pts[i - 1][1]) > 0.5)));
 
-const axisRect = (pts) => {
+const axisRect = (path) => {
+  // a rectangle drawn back to its start and then closed repeats that corner
+  const pts = path.filter((p, i) => !p || !path[i - 1] || Math.abs(p[0] - path[i - 1][0]) > 0.01 || Math.abs(p[1] - path[i - 1][1]) > 0.01);
   if (pts.includes(null) || pts.length < 4 || pts.length > 5) return null;
   const xs = pts.map((p) => p[0]);
   const ys = pts.map((p) => p[1]);
@@ -143,6 +145,7 @@ function vectorsOf(page) {
 const FIGURE_GAP = 8; // pt; diagram marks this close belong to the same figure
 const FIGURE_JOIN = 3; // pt; a box or line this close to a figure is part of it
 const FIGURE_MIN = 24; // pt; smaller clusters (a lone arrow, a bullet) aren't figures
+const FIGURE_ROW_GAP = 24; // pt; figures side by side closer than this are one
 const FIGURE_DPI_SCALE = 2; // figures are pictured at 144 dpi
 const BACKGROUND_SHARE = 0.4; // a figure over this share of the page is background art
 
@@ -174,7 +177,9 @@ function figuresOf({ shapes, segments, boxes }, lines, pageArea) {
       for (const p of parts) {
         // a box or line joins a figure it touches, unless it encloses the figure (the panel it sits in)
         const encloses = p[0] <= m[0] + 1 && p[1] <= m[1] + 1 && p[2] >= m[2] - 1 && p[3] >= m[3] - 1;
-        if (touches(m, p, FIGURE_JOIN) && (p[0] < m[0] || p[1] < m[1] || p[2] > m[2] || p[3] > m[3]) && !encloses) {
+        // a dash of a dashed connector reaches across the gaps between dashes (and round its corners)
+        const dash = Math.max(p[2] - p[0], p[3] - p[1]) < FIGURE_GAP;
+        if (touches(m, p, dash ? FIGURE_GAP : FIGURE_JOIN) && (p[0] < m[0] || p[1] < m[1] || p[2] > m[2] || p[3] > m[3]) && !encloses) {
           Object.assign(m, union(m, p));
           changed = true;
         }
@@ -182,7 +187,23 @@ function figuresOf({ shapes, segments, boxes }, lines, pageArea) {
     }
     regions = merged;
   }
-  return regions.filter((r) => r[2] - r[0] >= FIGURE_MIN && r[3] - r[1] >= FIGURE_MIN);
+  const figures = sideBySide(regions.filter((r) => r[2] - r[0] >= FIGURE_MIN && r[3] - r[1] >= FIGURE_MIN));
+  // a label set right against the figure ("Concrete Factories" under a row of classes) is part of it
+  const label = (f, l) => areaOf(f) <= pageArea * BACKGROUND_SHARE && touches(f, l.bbox, FIGURE_JOIN)
+    && l.bbox[0] >= f[0] - FIGURE_JOIN && l.bbox[2] <= f[2] + FIGURE_JOIN;
+  return figures.map((f) => lines.filter((l) => label(f, l)).reduce((r, l) => union(r, l.bbox), f));
+}
+
+/** Figures next to each other on the same rows (two halves of one diagram) joined into one, so
+ * the one-column Word page doesn't stack them. */
+function sideBySide(figures) {
+  const out = [];
+  for (const f of [...figures].sort((a, b) => a[0] - b[0])) {
+    const shared = (g) => Math.min(g[3], f[3]) - Math.max(g[1], f[1]);
+    const left = out.find((g) => f[0] - g[2] <= FIGURE_ROW_GAP && shared(g) > Math.min(g[3] - g[1], f[3] - f[1]) / 2);
+    if (left) Object.assign(left, union(left, f)); else out.push([...f]);
+  }
+  return out;
 }
 
 const TEXT_CALLS = new Set(["fillText", "strokeText", "ignoreText"]);
@@ -248,6 +269,40 @@ function contentOf(page) {
     },
   });
   return { lines, images };
+}
+
+// ---------- badges and drawn bullets ----------
+
+const BADGE_MAX = 3; // in font sizes; a filled shape at most this big behind a character is its badge
+const DOT_MAX = 0.5; // share of a line's height; a filled dot at most this big left of a line is its bullet
+const DOT_GAP = 3; // in dot sizes; the most room between a bullet dot and its line's text
+
+/** Characters drawn on a small filled shape (a round badge holding a white "D", a numbered square)
+ * get its colour as `badge`, so Word can shade them and a white letter stays readable. */
+function badgesOf(shapes, lines) {
+  const fills = shapes.filter((s) => s.closed && s.fill);
+  for (const l of lines) {
+    for (const ch of l.chars) {
+      const at = [(ch.x0 + ch.x1) / 2, ch.baseline - ch.size * 0.3];
+      const small = (b) => b[2] - b[0] <= ch.size * BADGE_MAX && b[3] - b[1] <= ch.size * BADGE_MAX;
+      const badge = fills.find((s) => ch.c.trim() && small(s.bbox) && inside(s.bbox, at) && s.fill !== ch.color);
+      if (badge) ch.badge = badge.fill;
+    }
+  }
+}
+
+/** Lines led by a drawn dot instead of a bullet character get a "• " in front, so they read as a list. */
+function bulletsOf(shapes, lines) {
+  const dots = shapes.filter((s) => s.closed && s.fill);
+  return lines.map((l) => {
+    const height = l.bbox[3] - l.bbox[1];
+    const dot = dots.find(({ bbox: b }) => b[2] - b[0] <= height * DOT_MAX && b[3] - b[1] <= height * DOT_MAX
+      && b[2] <= l.bbox[0] && l.bbox[0] - b[2] <= (b[2] - b[0]) * DOT_GAP && inside(l.bbox, [l.bbox[0], center(b)[1]]));
+    if (!dot) return l;
+    const first = l.chars[0];
+    const mark = [{ ...first, c: "•", x0: dot.bbox[0], x1: dot.bbox[2] }, { ...first, c: " ", x0: dot.bbox[2], x1: l.bbox[0] }];
+    return { ...l, chars: [...mark, ...l.chars], text: `• ${l.text}`, bbox: [dot.bbox[0], ...l.bbox.slice(1)] };
+  });
 }
 
 // ---------- tables ----------
@@ -402,6 +457,24 @@ function ruledTablesOf(segments, boxes, lines) {
   return tables;
 }
 
+const RULED_HEADING = 1.1; // a line this much bigger than a ruled table's usual text isn't in the table
+
+/** A ruled table ends before a row holding a heading or body text bigger than its own: the rule
+ * under the next section's heading lines up with the table's row lines, so the rows chain on. */
+function untilHeading(table, lines) {
+  const sizeOf = (l) => Math.max(...l.chars.map((c) => c.size));
+  const held = lines.filter((l) => inside(table.bbox, center(l.bbox)));
+  const sizes = held.map(sizeOf).sort((a, b) => a - b);
+  const usual = sizes[Math.floor(sizes.length / 2)];
+  const big = held.filter((l) => sizeOf(l) > usual * RULED_HEADING).map((l) => center(l.bbox)[1]);
+  const cut = table.ys.findIndex((y, r) => r < table.ys.length - 1 && big.some((cy) => cy >= y && cy <= table.ys[r + 1]));
+  if (cut < 0) return table;
+  if (cut === 0) return null;
+  const bottom = table.ys[cut];
+  return { ...table, ys: table.ys.slice(0, cut + 1), bbox: [table.bbox[0], table.bbox[1], table.bbox[2], bottom],
+    cells: table.cells.filter((c) => c.row < cut), segments: table.segments.filter((s) => s.at <= bottom + NEAR) };
+}
+
 const center = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 const inside = (r, [x, y]) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
 const areaOf = (r) => (r[2] - r[0]) * (r[3] - r[1]);
@@ -498,7 +571,7 @@ function joinRows(lines) {
     const left = out.find((o) => !o.vertical && !line.vertical && Math.abs(baseline(o) - baseline(line)) <= 2
       && line.bbox[0] - o.bbox[2] >= -1 && line.bbox[0] - o.bbox[2] <= ROW_GAP * Math.max(sizeOf(o), sizeOf(line)));
     if (!left) { out.push(line); continue; }
-    const space = { ...left.chars.at(-1), c: " ", x0: left.bbox[2], x1: line.bbox[0] };
+    const space = { ...left.chars.at(-1), c: " ", x0: left.bbox[2], x1: line.bbox[0], badge: undefined };
     Object.assign(left, {
       chars: [...left.chars, space, ...line.chars], text: `${left.text} ${line.text}`,
       bbox: [left.bbox[0], Math.min(left.bbox[1], line.bbox[1]), line.bbox[2], Math.max(left.bbox[3], line.bbox[3])],
@@ -566,8 +639,10 @@ export function analyzePdf(bytes) {
     for (let i = 0; i < doc.countPages(); i++) {
       const page = doc.loadPage(i);
       const [x0, y0, x1, y1] = page.getBounds();
-      const content = contentOf(page);
       const vectors = vectorsOf(page);
+      const read = contentOf(page);
+      const content = { ...read, lines: bulletsOf(vectors.shapes, read.lines) };
+      badgesOf(vectors.shapes, content.lines);
       const pageArea = (x1 - x0) * (y1 - y0);
       const found = figuresOf(vectors, content.lines, pageArea)
         .map(([a, b, c, d]) => [Math.max(x0, a - 2), Math.max(y0, b - 2), Math.min(x1, c + 2), Math.min(y1, d + 2)]);
@@ -589,7 +664,7 @@ export function analyzePdf(bytes) {
       const inGrid = (b) => grids.some((t) => inside(t.bbox, center(b)));
       const gridSegments = new Set(grids.flatMap((t) => t.segments));
       const ruled = ruledTablesOf(segments.filter((s) => !gridSegments.has(s)), boxes.filter((b) => !inGrid(b.rect)),
-        lines.filter((l) => !inGrid(l.bbox)));
+        lines.filter((l) => !inGrid(l.bbox))).map((t) => untilHeading(t, lines)).filter(Boolean);
       const holdsTable = (box) => [...grids, ...ruled].some((t) => inside(box.bbox, center(t.bbox)));
       const tables = [...grids, ...ruled, ...allGrids.filter((t) => t.cells.length === 1 && !holdsTable(t))];
       const cellAt = (b) => {
