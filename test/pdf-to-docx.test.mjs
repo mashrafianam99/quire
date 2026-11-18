@@ -158,3 +158,48 @@ test("coloured boxes keep their fill (and accent bar) behind editable text; a hi
   assert.ok(text.includes("A sentence with a highlighted word inside it."), "the highlighted line stays a paragraph");
   assert.ok(!/<w:tbl>(?:(?!<\/w:tbl>)[\s\S])*A sentence/.test(body), "and isn't put in a box");
 });
+
+test("a code listing keeps one paragraph per line, its indentation and blank lines, in a monospace font", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const courier = await doc.embedFont(StandardFonts.Courier);
+  const page = doc.addPage([600, 800]);
+  const code = (text, i, x = 72) => page.drawText(text, { x, y: 700 - i * 12, size: 10, font: courier });
+  code("public class Main { // a long first line, as wide as the listing gets", 0);
+  code("    int x = compute(1, 2, 3);", 1);
+  code("    return x;", 2);
+  code("y = 2;", 3, 72 + 4 * 6); // indented by position, not by spaces
+  code("}", 5); // after a blank line
+  page.drawText("Call", { x: 72, y: 600, size: 11, font: helv });
+  page.drawRectangle({ x: 96, y: 597, width: 82, height: 13, color: rgb(0.93, 0.93, 0.93) });
+  page.drawText("getInstance()", { x: 98, y: 600, size: 10, font: courier });
+  page.drawText("once, from any class.", { x: 182, y: 600, size: 11, font: helv });
+  const bytes = await doc.save();
+
+  const docx = await pdfToDocx(bytes);
+  const { body } = await partsOf(docx);
+  const paragraphs = [...body.matchAll(/<w:p>[\s\S]*?<\/w:p>|<w:p\/>/g)].map((m) => m[0]);
+  const textOf = (p) => [...p.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+  const lines = paragraphs.map(textOf);
+  const at = lines.indexOf("    return x;");
+  assert.ok(at > 0, "leading spaces are kept");
+  assert.equal(lines[at - 1], "    int x = compute(1, 2, 3);", "each code line is its own paragraph");
+  assert.equal(lines[at + 1], "    y = 2;", "an indent by position becomes spaces");
+  assert.deepEqual(lines.slice(at + 2, at + 4), ["", "}"], "the blank line survives");
+  assert.match(paragraphs[at], /w:ascii="Courier New"/, "an Office monospace font");
+  const inline = paragraphs.find((p) => textOf(p).includes("getInstance()"));
+  assert.match(inline, /w:fill="ededed"[\s\S]*getInstance\(\)/i, "inline code keeps its grey background");
+  assert.match(inline, /w:ascii="Arial"[\s\S]*Call/, "the sentence around it stays in its own font");
+
+  const styles = new TextDecoder().decode(await unzip(docx).get("word/styles.xml")());
+  assert.match(styles, /<w:docDefaults>[\s\S]*w:ascii="Arial"[\s\S]*<\/w:docDefaults>/, "empty paragraphs aren't Times New Roman");
+});
+
+test("PDF fonts Word doesn't have map to close ones it has; Office fonts keep their name", async () => {
+  const { wordFont } = await import("../src/pdf-to-docx.js");
+  assert.equal(wordFont({ family: "DejaVu Sans Mono", mono: true }), "Consolas");
+  assert.equal(wordFont({ family: "Poppins" }), "Century Gothic");
+  assert.equal(wordFont({ family: "Georgia", serif: true }), "Georgia");
+  assert.equal(wordFont({ family: "Merriweather", serif: true }), "Cambria");
+  assert.equal(wordFont({ family: "Inter" }), "Arial");
+});

@@ -18,14 +18,24 @@ const LIST_MARK = /^\s*[•●○◦▪■▸►–\-*]\s+/;
 const LABEL = /^\s*(\(?[a-z0-9ivx]{1,3}[.)])(\s|\S)/i; // "(b)", "2.", "a)": a line starting so starts a paragraph
 const BULLETS = "bullets";
 
-/** Free fonts that stand in for Office fonts, mapped back so Word shows the original look. */
+/** Free fonts that stand in for Office fonts, mapped back so Word shows the original look; and
+ * web fonts Word doesn't have, mapped to the closest font it does. */
 const FONT_NAMES = [
   [/^(carlito)/i, "Calibri"], [/^(caladea)/i, "Cambria"],
   [/^(liberation sans|arimo|nimbus sans|helvetica)/i, "Arial"],
   [/^(liberation serif|tinos|nimbus roman|times)/i, "Times New Roman"],
   [/^(liberation mono|cousine|nimbus mono|courier)/i, "Courier New"],
+  [/^(poppins|montserrat|lexend|futura|avenir|quicksand|nunito|raleway|comfortaa|questrial|josefin|urbanist|outfit|manrope)/i, "Century Gothic"],
 ];
-const wordFont = (family) => FONT_NAMES.find(([re]) => re.test(family))?.[1] ?? family;
+/** Fonts that come with Office on Windows and Mac: kept as they are. */
+const OFFICE_FONTS = new Set(["arial", "arial narrow", "arial black", "aptos", "book antiqua", "calibri", "calibri light", "cambria",
+  "candara", "century gothic", "comic sans ms", "consolas", "constantia", "corbel", "courier new", "franklin gothic",
+  "garamond", "georgia", "gill sans mt", "impact", "lucida console", "lucida sans", "palatino linotype", "segoe ui",
+  "tahoma", "times new roman", "trebuchet ms", "verdana"]);
+const CODE_FONT = "Consolas";
+// shortcut: any other font becomes Arial, Cambria or Consolas; embed the PDF's own fonts for an exact look
+export const wordFont = ({ family, mono, serif }) => FONT_NAMES.find(([re]) => re.test(family))?.[1]
+  ?? (OFFICE_FONTS.has(family.toLowerCase()) ? family : mono ? CODE_FONT : serif ? "Cambria" : "Arial");
 
 const mode = (values) => {
   const counts = new Map();
@@ -39,6 +49,9 @@ const pct = (values, p) => {
 
 // ---------- text ----------
 
+const isCode = (line) => line.chars.every((c) => !c.c.trim() || c.font.mono);
+const MAX_BLANKS = 3; // blank lines kept inside a listing; a wider gap starts a new listing
+
 /** The lines of a page (or cell) grouped into paragraphs. */
 function paragraphsOf(lines) {
   const blockRight = new Map();
@@ -49,22 +62,44 @@ function paragraphsOf(lines) {
     const para = paras.at(-1);
     const prev = para?.lines.at(-1);
     const avgChar = (line.bbox[2] - line.bbox[0]) / Math.max(1, line.text.length);
-    const joins = prev && prev.block === line.block && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
+    const joins = prev && prev.block === line.block && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
       && Math.abs(para.size - size) <= size * 0.15
       && line.bbox[1] - prev.bbox[3] < size * 0.8 && line.bbox[1] >= prev.bbox[1] + size * 0.5
       && prev.bbox[2] >= blockRight.get(prev.block) - avgChar * 8; // a short line ends its paragraph
     if (joins) para.lines.push(line);
-    else paras.push({ lines: [line], size });
+    else paras.push({ lines: [line], size, code: isCode(line) });
   }
-  return paras.map((p) => ({
+  const out = paras.map((p) => ({
     ...p,
     bbox: [Math.min(...p.lines.map((l) => l.bbox[0])), p.lines[0].bbox[1],
       Math.max(...p.lines.map((l) => l.bbox[2])), p.lines.at(-1).bbox[3]],
   }));
+  for (let i = 0; i < out.length; i++) {
+    let j = i;
+    while (out[i].code && out[j + 1]?.code) j++;
+    if (out[i].code) layOutCode(out.slice(i, j + 1));
+    i = j;
+  }
+  return out;
+}
+
+/** A code listing keeps its layout: its line pitch, blank lines between its lines, and indents
+ * as leading spaces (counted in character widths where the PDF moved a line instead of drawing spaces). */
+function layOutCode(listing) {
+  const baseline = (p) => p.lines[0].chars[0].baseline;
+  const gaps = listing.slice(1).map((p, k) => baseline(p) - baseline(listing[k]));
+  const pitch = mode(gaps.filter((g) => g > 0).map((g) => Math.round(g * 2) / 2)) ?? listing[0].size * 1.2;
+  const codeLeft = Math.min(...listing.map((p) => p.bbox[0]));
+  listing.forEach((p, k) => {
+    const charWidth = mode(p.lines[0].chars.map((c) => Math.round((c.x1 - c.x0) * 10) / 10)) || p.size * 0.6;
+    const lines = k ? Math.round(gaps[k - 1] / pitch) : 0;
+    const inCode = lines >= 1 && lines <= MAX_BLANKS + 1;
+    Object.assign(p, { pitch, codeLeft, pad: Math.round((p.bbox[0] - codeLeft) / charWidth), inCode, blanks: inCode ? lines - 1 : 0 });
+  });
 }
 
 /** A paragraph's characters as Word runs: same font, size, colour and script run together. */
-function runsOf(para, bodySize, { stripMark = false } = {}) {
+function runsOf(para, bodySize, { stripMark = false, pad = 0 } = {}) {
   const runs = [];
   para.lines.forEach((line, i) => {
     const baseline = mode(line.chars.map((c) => Math.round(c.baseline)));
@@ -81,18 +116,20 @@ function runsOf(para, bodySize, { stripMark = false } = {}) {
       // raised or lowered off the line's baseline (often smaller too, but not always)
       const shift = c.baseline - baseline;
       const script = c.c.trim() && shift < -c.size * 0.15 ? "sup" : c.c.trim() && shift > c.size * 0.12 ? "sub" : null;
-      const key = `${c.font.family}|${c.font.bold}|${c.font.italic}|${Math.round(c.size * 2)}|${c.color}|${script}`;
+      const key = `${c.font.family}|${c.font.bold}|${c.font.italic}|${Math.round(c.size * 2)}|${c.color}|${script}|${c.bg}`;
       if (runs.at(-1)?.key === key) runs.at(-1).text += c.c;
       else runs.push({ key, text: c.c, c, script });
     }
   });
+  if (pad && runs.length) runs[0].text = " ".repeat(pad) + runs[0].text;
   return runs.filter((r) => r.text).map(({ text, c, script }) => new TextRun({
-    text: text.replace(/\s+/g, " "),
-    font: wordFont(c.font.family),
+    text: c.font.mono ? text : text.replace(/\s+/g, " "), // code keeps its spaces
+    font: wordFont(c.font),
     size: Math.round((script ? para.size : c.size) * 2),
     bold: c.font.bold, italics: c.font.italic,
     color: c.color === "#000000" ? undefined : c.color.slice(1),
     superScript: script === "sup", subScript: script === "sub",
+    shading: c.bg ? { type: ShadingType.CLEAR, fill: c.bg.slice(1), color: "auto" } : undefined,
   }));
 }
 
@@ -130,7 +167,22 @@ function headingOf(para, bodySize) {
 
 const borderOf = (s) => ({ style: BorderStyle.SINGLE, size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1), space: 1 });
 
+/** A line of code: as it is, left aligned at the listing's indent, at the listing's own pitch,
+ * after the blank lines that came before it. */
+function codeOf(para, ctx, { left, before, pageBreak, extra }) {
+  const spacing = { after: 0, line: Math.round(para.pitch * TW), lineRule: "exact" };
+  const indent = { left: Math.max(0, Math.round((para.codeLeft - left) * TW)) };
+  const blank = () => new Paragraph({ indent, spacing: { ...spacing, before: 0 } });
+  return [...Array.from({ length: para.blanks }, blank), new Paragraph({
+    indent, pageBreakBefore: pageBreak || undefined,
+    spacing: { ...spacing, before: para.inCode ? 0 : Math.max(0, Math.round(before * TW)) },
+    children: [...extra, ...runsOf(para, ctx.bodySize, { pad: para.pad })],
+  })];
+}
+
+/** A paragraph as Word paragraphs (a code line may bring blank lines before it). */
 function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, extra = [] }) {
+  if (para.code) return codeOf(para, ctx, { left, before, pageBreak, extra });
   const listed = LIST_MARK.test(para.lines[0].text);
   const { alignment, indent } = layoutOf(para, left, right, ctx.isIndent);
   // a rule just under (or over) the paragraph is its border, as Word draws heading underlines
@@ -141,7 +193,7 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
   const over = ctx.rules?.find((s) => !s.used && s.at <= para.bbox[1] + slack && s !== under && near(s, para.bbox[1]));
   for (const s of [under, over]) if (s) s.used = true;
   const lineGaps = para.lines.slice(1).map((l, i) => l.chars[0].baseline - para.lines[i].chars[0].baseline);
-  return new Paragraph({
+  return [new Paragraph({
     heading: listed ? undefined : headingOf(para, ctx.bodySize),
     alignment,
     indent: listed ? undefined : indent,
@@ -153,7 +205,7 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
     },
     border: under || over ? { ...(under ? { bottom: borderOf(under) } : {}), ...(over ? { top: borderOf(over) } : {}) } : undefined,
     children: [...extra, ...runsOf(para, ctx.bodySize, { stripMark: listed })],
-  });
+  })];
 }
 
 // ---------- pictures and tables ----------
@@ -202,7 +254,7 @@ function tableOf(table, ctx) {
           top: inset(() => Math.min(...content.map((b) => b[1])) - cy0, 2),
           bottom: inset(() => cy1 - Math.max(...content.map((b) => b[3])), 2) };
         const [inL, inR] = [cx0 + margins.left / TW, cx1 - margins.right / TW];
-        const paras = paragraphsOf(cell.lines).map((p) => paragraphOf(p, { ...ctx, rules: null, isIndent: () => false }, { left: inL, right: inR }));
+        const paras = paragraphsOf(cell.lines).flatMap((p) => paragraphOf(p, { ...ctx, rules: null, isIndent: () => false }, { left: inL, right: inR }));
         const pictures = cell.images.map((img) => imageOf(img, { left: inL, right: inR }));
         return new TableCell({
           margins,
@@ -227,7 +279,7 @@ function tableOf(table, ctx) {
 function bandParagraphs(band, left, right) {
   return band.map(({ text, line }) => {
     const c = line.chars.find((ch) => ch.c.trim()) ?? line.chars[0];
-    const style = { font: wordFont(c.font.family), size: Math.round(c.size * 2), bold: c.font.bold, italics: c.font.italic,
+    const style = { font: wordFont(c.font), size: Math.round(c.size * 2), bold: c.font.bold, italics: c.font.italic,
       color: c.color === "#000000" ? undefined : c.color.slice(1) };
     const children = text.split(/(\{PAGE\}|\{NUMPAGES\})/).filter(Boolean).map((part) => (part === "{PAGE}"
       ? new TextRun({ ...style, children: [PageNumber.CURRENT] })
@@ -250,6 +302,9 @@ export async function pdfToDocx(bytes) {
   const { pages, header, footer } = analyzePdf(bytes);
   const allLines = pages.flatMap((p) => p.lines);
   const bodySize = mode(allLines.flatMap((l) => l.chars.filter((c) => c.c.trim()).map((c) => Math.round(c.size * 2) / 2))) ?? 11;
+  const bodyChars = allLines.filter((l) => !isCode(l)).flatMap((l) => l.chars.filter((c) => c.c.trim()));
+  const bodyFamily = mode(bodyChars.map((c) => c.font.family));
+  const bodyFont = bodyChars.find((c) => c.font.family === bodyFamily)?.font ?? { family: "Arial" };
   const first = pages[0] ?? { width: 612, height: 792 };
   const left = allLines.length ? pct(allLines.map((l) => l.bbox[0]), 0.05) : 72;
   const textRight = allLines.length ? pct(allLines.map((l) => l.bbox[2]), 0.95) : first.width - 72;
@@ -273,7 +328,7 @@ export async function pdfToDocx(bytes) {
       const before = item.top - y;
       const pageBreak = p > 0 && i === 0;
       if (item.para) {
-        children.push(paragraphOf(item.para, ctx, { left, right, before, pageBreak, extra: i === 0 ? backgrounds : [] }));
+        children.push(...paragraphOf(item.para, ctx, { left, right, before, pageBreak, extra: i === 0 ? backgrounds : [] }));
       } else if (item.img) {
         children.push(imageOf(item.img, { left, right, before, pageBreak }));
       } else {
@@ -289,7 +344,8 @@ export async function pdfToDocx(bytes) {
   const doc = new Document({
     numbering: { config: [{ reference: BULLETS, levels: [{ level: 0, format: LevelFormat.BULLET, text: "•",
       alignment: AlignmentType.LEFT, style: { paragraph: { indent: { left: 360, hanging: 260 } } } }] }] },
-    styles: { default: { document: { run: { size: Math.round(bodySize * 2) } } } },
+    // empty and spacer paragraphs take the body font too, not Word's Times New Roman
+    styles: { default: { document: { run: { size: Math.round(bodySize * 2), font: wordFont(bodyFont) } } } },
     sections: [{
       properties: {
         page: {
