@@ -17,6 +17,7 @@ const PX = 96 / 72; // docx sizes pictures in 96-dpi pixels
 const EMU = 12700; // EMU per point
 const LIST_MARK = /^\s*[•●○◦▪■▸►–\-*]\s+/;
 const LABEL = /^\s*(\(?[a-z0-9ivx]{1,3}[.)])(\s|\S)/i; // "(b)", "2.", "a)": a line starting so starts a paragraph
+const FIELD_VALUE = /^\s*:/; // ": 12 January": a form's value, one per line
 const BULLETS = "bullets";
 const NEAR_JOIN = 2; // pt; a table this close under another, with the same edges, continues it in Word
 const FRAME_SLACK = 1.15; // a framed paragraph's room for a wider stand-in font
@@ -109,7 +110,7 @@ function paragraphsOf(lines) {
     const para = paras.at(-1);
     const prev = para?.lines.at(-1);
     const avgChar = (line.bbox[2] - line.bbox[0]) / Math.max(1, line.text.length);
-    const joins = prev && blockOf.get(prev) === blockOf.get(line) && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
+    const joins = prev && blockOf.get(prev) === blockOf.get(line) && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text) && !FIELD_VALUE.test(line.text)
       && Math.abs(para.size - size) <= size * 0.15
       && line.bbox[1] - prev.bbox[3] < size * 0.8 && line.bbox[1] >= prev.bbox[1] + size * 0.5
       && prev.bbox[2] >= blockRight.get(blockOf.get(prev)) - avgChar * 8 // a short line ends its paragraph

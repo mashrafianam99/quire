@@ -566,3 +566,15 @@ test("dark header boxes drawn on top of a grid become its first row, cut at the 
   assert.deepEqual(table.xs.map(Math.round), [50, 250, 350, 550], "the grid's own columns");
   assert.ok(table.cells.filter((c) => c.row === 0).every((c) => c.fill === "#212e42"), "the header keeps its fill");
 });
+
+test("form values set one per line after a colon stay separate paragraphs", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  page.drawText(": 123-456-7890", { x: 72, y: 700, size: 10, font: helv });
+  page.drawText(": 12 January, 2028", { x: 72, y: 688, size: 10, font: helv });
+
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  const paragraphs = [...body.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)].map((m) => [...m[0].matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g)].map((t) => t[1]).join(""));
+  assert.ok(paragraphs.includes(": 123-456-7890") && paragraphs.includes(": 12 January, 2028"), paragraphs.join(" | "));
+});
