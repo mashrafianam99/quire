@@ -253,6 +253,8 @@ function fontOf(font) {
   };
 }
 
+const VISIBLE = 1; // pt; a picture thinner than this shows nothing (and Word won't open a zero-size one)
+const visible = ([x0, y0, x1, y1]) => x1 - x0 >= VISIBLE && y1 - y0 >= VISIBLE;
 const PHOTO_PIXELS = 1e6; // an opaque picture this big (a scanned page, a photo) is kept as JPEG
 const PHOTO_QUALITY = 85;
 
@@ -270,6 +272,7 @@ function contentOf(page) {
   const text = page.toStructuredText("preserve-images,preserve-whitespace");
   text.walk({
     onImageBlock(bbox, transform, image) {
+      if (!visible(bbox)) return;
       try {
         const decoded = image.toPixmap();
         const n = decoded.getColorSpace()?.getNumberOfComponents();
@@ -786,7 +789,7 @@ export function analyzePdf(bytes) {
       const inAnyFigure = (b) => found.some((f) => inside(f, center(b)));
       const lines = content.lines.filter((l) => !inDiagram(l.bbox));
       const images = [...content.images.filter((img) => !inAnyFigure(img.bbox)),
-        ...found.map((f) => picture(page, f, { withText: !isBackground(f) }))];
+        ...found.filter(visible).map((f) => picture(page, f, { withText: !isBackground(f) }))];
       const inFigure = inAnyFigure;
       const segments = vectors.segments.filter((s) => !inFigure(s.dir === "h" ? [s.from, s.at, s.to, s.at] : [s.at, s.from, s.at, s.to]));
       const boxes = vectors.boxes.filter((b) => !inFigure(b.rect));

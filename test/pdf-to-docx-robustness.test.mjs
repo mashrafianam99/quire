@@ -85,6 +85,24 @@ test("a bullet on a line of its own, followed by its text, converts", async () =
   assert.ok(text.includes("Tea") && text.includes("Milk"));
 });
 
+test("a picture drawn with no height or width is left out, so Word can open the file", async () => {
+  const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 8, 8], false);
+  pix.clear(90);
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([595, 842]);
+  const png = await doc.embedPng(pix.asPNG());
+  page.drawImage(png, { x: 72, y: 600, width: 400, height: 0 }); // a rule drawn as a picture squashed flat
+  page.drawImage(png, { x: 72, y: 300, width: 0, height: 200 });
+  page.drawImage(png, { x: 72, y: 100, width: 50, height: 50 });
+  page.drawText("Some text.", { x: 72, y: 700, size: 12, font: helv });
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+
+  const extents = [...body.matchAll(/<wp:extent cx="(-?\d+)" cy="(-?\d+)"/g)].map((m) => [+m[1], +m[2]]);
+  assert.equal(extents.length, 1, "only the visible picture");
+  assert.ok(extents.every(([cx, cy]) => cx > 0 && cy > 0), "Word rejects a picture with a zero or negative size");
+});
+
 test("a scanned page comes out as a picture of the page, kept as JPEG so the .docx stays small", async () => {
   const [w, h] = [1240, 1754]; // A4 at 150 dpi
   const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, w, h], false);
