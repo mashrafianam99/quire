@@ -6,7 +6,7 @@
 // page starts something new (elsewhere the content flows on), and the running header/footer with
 // live page numbers (a cover without them gets a section of its own).
 import {
-  AlignmentType, BorderStyle, Document, Footer, FrameAnchorType, Header, HeadingLevel, HorizontalPositionRelativeFrom, ImageRun,
+  AlignmentType, BorderStyle, Document, Footer, FrameAnchorType, Header, HeadingLevel, HeightRule, HorizontalPositionRelativeFrom, ImageRun,
   LevelFormat, Packer, PageNumber, Paragraph, ShadingType, Table, TableCell, TableLayoutType, TableRow, TextRun,
   VerticalPositionRelativeFrom, WidthType,
 } from "docx";
@@ -23,6 +23,9 @@ const FRAME_SLACK = 1.15; // a framed paragraph's room for a wider stand-in font
 const FRESH_GAP = 0.15; // a page that ended this share of its height early: the next starts on a fresh page
 const SPACE_WIDTH = 0.25; // a space is about this share of the font size
 const HEADING_SLACK = 0.5; // pt: a heading this close to the document's largest is a top-level one
+const GUTTER = 6; // pt; items at least this far apart side by side are in columns of their own
+const RULE_REACH = 8; // pt; a fill-in line this close under text is on the text's row
+const LINE_HEIGHT = 1.15; // in font sizes; Word's single line
 
 /** Free fonts that stand in for Office fonts, mapped back so Word shows the original look; and
  * web fonts Word doesn't have, mapped to the closest font it does. */
@@ -61,7 +64,11 @@ const MAX_BLANKS = 3; // blank lines kept inside a listing; a wider gap starts a
 /** The lines of a page (or cell) grouped into paragraphs. */
 function paragraphsOf(lines) {
   const blockRight = new Map();
-  for (const l of lines) blockRight.set(l.block, Math.max(blockRight.get(l.block) ?? 0, l.bbox[2]));
+  const blockLeft = new Map();
+  for (const l of lines) {
+    blockRight.set(l.block, Math.max(blockRight.get(l.block) ?? 0, l.bbox[2]));
+    blockLeft.set(l.block, Math.min(blockLeft.get(l.block) ?? Infinity, l.bbox[0]));
+  }
   const paras = [];
   for (const line of lines) {
     const size = mode(line.chars.map((c) => Math.round(c.size * 2) / 2));
@@ -71,7 +78,8 @@ function paragraphsOf(lines) {
     const joins = prev && prev.block === line.block && !isCode(line) && !isCode(prev) && !LIST_MARK.test(line.text) && !LABEL.test(line.text)
       && Math.abs(para.size - size) <= size * 0.15
       && line.bbox[1] - prev.bbox[3] < size * 0.8 && line.bbox[1] >= prev.bbox[1] + size * 0.5
-      && prev.bbox[2] >= blockRight.get(prev.block) - avgChar * 8; // a short line ends its paragraph
+      && prev.bbox[2] >= blockRight.get(prev.block) - avgChar * 8 // a short line ends its paragraph
+      && prev.bbox[0] <= blockLeft.get(prev.block) + avgChar * 8; // so does one set far right (right-aligned lines)
     if (joins) para.lines.push(line);
     else paras.push({ lines: [line], size, code: isCode(line) });
   }
@@ -136,7 +144,7 @@ function runsOf(para, bodySize, { stripMark = false, pad = 0, keepGaps = false }
     font: wordFont(c.font),
     size: Math.round((script ? para.size : c.size) * 2),
     bold: c.font.bold, italics: c.font.italic,
-    color: c.color === "#000000" ? undefined : c.color.slice(1),
+    color: c.color.slice(1),
     superScript: script === "sup", subScript: script === "sub",
     // a badge's or inline code's fill; shortcut: a round badge becomes a square of shading behind its letter
     shading: (c.badge ?? c.bg) ? { type: ShadingType.CLEAR, fill: (c.badge ?? c.bg).slice(1), color: "auto" } : undefined,
@@ -176,7 +184,9 @@ function headingOf(para, bodySize) {
   return undefined;
 }
 
-const borderOf = (s) => ({ style: BorderStyle.SINGLE, size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1), space: 1 });
+const styleOf = (s) => (s.dash === "dot" ? BorderStyle.DOTTED : s.dash === "dash" ? BorderStyle.DASHED : BorderStyle.SINGLE);
+const BORDER_SPACE = 1; // pt between a paragraph and its border line
+const borderOf = (s) => ({ style: styleOf(s), size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1), space: BORDER_SPACE });
 
 /** A line of code: as it is, left aligned at the listing's indent, at the listing's own pitch,
  * after the blank lines that came before it. */
@@ -216,11 +226,14 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
   const under = ctx.rules?.find((s) => !s.used && s.at >= para.bbox[3] - slack && near(s, para.bbox[3]));
   const over = ctx.rules?.find((s) => !s.used && s.at <= para.bbox[1] + slack && s !== under && near(s, para.bbox[1]));
   for (const s of [under, over]) if (s) s.used = true;
+  para.ruled = [under, over].reduce((n, s) => n + (s ? s.width + BORDER_SPACE : 0), 0); // what Word's borders add
+  // in a form field the line ends where the PDF's does, not at the cell's edge
+  const fit = ctx.fit && (under ?? over) ? { right: Math.max(0, Math.round((right - (under ?? over).to) * TW)) } : {};
   const lineGaps = para.lines.slice(1).map((l, i) => l.chars[0].baseline - para.lines[i].chars[0].baseline);
   return [new Paragraph({
     heading: listed ? undefined : headingOf(para, ctx.bodySize),
     alignment,
-    indent: listed || framed ? undefined : indent,
+    indent: listed || framed ? undefined : { ...indent, ...fit },
     frame: framed ? frameOf(para, alignment, ctx.pageWidth) : undefined,
     numbering: listed ? { reference: BULLETS, level: 0 } : undefined,
     pageBreakBefore: pageBreak || undefined,
@@ -228,7 +241,8 @@ function paragraphOf(para, ctx, { left, right, before = 0, pageBreak = false, ex
       before: framed ? 0 : Math.max(0, Math.round(before * TW)), after: 0,
       ...(lineGaps.length ? { line: Math.round(mode(lineGaps.map(Math.round)) * TW), lineRule: "atLeast" } : {}),
     },
-    border: under || over ? { ...(under ? { bottom: borderOf(under) } : {}), ...(over ? { top: borderOf(over) } : {}) } : undefined,
+    // Word boxes consecutive paragraphs with the same borders together; `between` keeps each one's line
+    border: under || over ? { ...(under ? { bottom: borderOf(under), between: borderOf(under) } : {}), ...(over ? { top: borderOf(over) } : {}) } : undefined,
     children: [...extra, ...runsOf(para, ctx.bodySize, { stripMark: listed, keepGaps: framed })],
   })];
 }
@@ -259,25 +273,35 @@ const backgroundOf = (img) => new ImageRun({
   },
 });
 
+const EMPTY_PAD = 2; // pt; the top and bottom padding of an empty cell
+const CENTRED = 4; // pt; text whose side gaps differ less than this (or this share of them) is centred in its cell
+const CENTRED_SHARE = 0.25;
+const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
+
 function tableOf(table, ctx) {
   const widths = table.xs.slice(1).map((x, i) => Math.round((x - table.xs[i]) * TW));
-  const side = (s) => (s ? { style: BorderStyle.SINGLE, size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1) }
-    : { style: BorderStyle.NONE, size: 0, color: "FFFFFF" });
+  const side = (s) => (s ? { style: styleOf(s), size: Math.max(2, Math.round(s.width * 8)), color: s.color.slice(1) }
+    : NO_BORDER);
   const rows = [];
   for (let r = 0; r < table.ys.length - 1; r++) {
     const cells = table.cells.filter((c) => c.row === r).sort((a, b) => a.col - b.col);
     if (!cells.length) continue; // shortcut: a row made only of cells merged from above is dropped
+    // a row with nothing in it would shrink to one line
+    const empty = cells.every((c) => !c.lines.length && !c.images.length);
     rows.push(new TableRow({
+      height: empty ? { value: Math.round((table.ys[r + 1] - table.ys[r] - 2 * EMPTY_PAD) * TW), rule: HeightRule.ATLEAST } : undefined,
       children: cells.map((cell) => {
         const [cx0, cy0, cx1, cy1] = cell.rect;
         // the cell's padding is the gap between its border and its content
         const content = [...cell.lines, ...cell.images].map((x) => x.bbox);
         const inset = (f, fallback) => Math.round(Math.max(0, Math.min(36, content.length ? f() : fallback)) * TW);
-        // the narrower side, so centred text isn't squeezed; an empty cell (a gap between boxes) needs none
-        const padX = inset(() => Math.min(Math.min(...content.map((b) => b[0])) - cx0, cx1 - Math.max(...content.map((b) => b[2]))), 0);
+        // the narrower side, so centred text isn't squeezed (nor wrapped in a wider stand-in font);
+        // an empty cell (a gap between boxes) needs none
+        const sides = () => [Math.min(...content.map((b) => b[0])) - cx0, cx1 - Math.max(...content.map((b) => b[2]))];
+        const padX = inset(() => (Math.abs(sides()[0] - sides()[1]) < Math.max(CENTRED, Math.min(...sides()) * CENTRED_SHARE) ? EMPTY_PAD : Math.min(...sides())), 0);
         const margins = { left: padX, right: padX,
-          top: inset(() => Math.min(...content.map((b) => b[1])) - cy0, 2),
-          bottom: inset(() => cy1 - Math.max(...content.map((b) => b[3])), 2) };
+          top: inset(() => Math.min(...content.map((b) => b[1])) - cy0, EMPTY_PAD),
+          bottom: inset(() => cy1 - Math.max(...content.map((b) => b[3])), EMPTY_PAD) };
         const [inL, inR] = [cx0 + margins.left / TW, cx1 - margins.right / TW];
         const paras = paragraphsOf(cell.lines).flatMap((p) => paragraphOf(p, { ...ctx, rules: null, isIndent: () => false }, { left: inL, right: inR }));
         const pictures = cell.images.map((img) => imageOf(img, { left: inL, right: inR }));
@@ -297,6 +321,137 @@ function tableOf(table, ctx) {
   return new Table({ rows, columnWidths: widths, layout: TableLayoutType.FIXED,
     indent: indent > 2 * TW ? { size: indent, type: WidthType.DXA } : undefined,
     width: { size: widths.reduce((a, b) => a + b, 0), type: WidthType.DXA } });
+}
+
+// ---------- side by side (forms, logos beside titles, label/value pairs) ----------
+
+const spacerOf = (height, pageBreak = false) => new Paragraph({ pageBreakBefore: pageBreak || undefined,
+  spacing: { before: 0, after: 0, line: Math.max(20, Math.round(height * TW)), lineRule: "exact" } });
+
+/** Items stacked in bands: an item whose top is above the bottom of the band so far is beside it. */
+function bandsOf(items) {
+  const bands = [];
+  for (const it of [...items].sort((a, b) => a.top - b.top)) {
+    const band = bands.at(-1);
+    if (band && it.top < band.bottom - 1) {
+      band.items.push(it);
+      band.bottom = Math.max(band.bottom, it.bottom);
+    } else bands.push({ top: it.top, bottom: it.bottom, items: [it] });
+  }
+  return bands;
+}
+
+/** The x ranges no item of a band covers: the gaps between them and out to either side. */
+function freeOf(items) {
+  const free = [];
+  let right = -Infinity;
+  for (const it of [...items].sort((a, b) => a.x0 - b.x0)) {
+    if (it.x0 > right) free.push([right, it.x0]);
+    right = Math.max(right, it.x1);
+  }
+  return [...free, [right, Infinity]];
+}
+const guttersOf = (items) => freeOf(items).slice(1, -1).filter(([a, b]) => b - a >= GUTTER);
+
+/** A region's gutters narrowed to stay open in the band, or null when the band crosses one or
+ * splits where the region doesn't. */
+function narrowed(gutters, band) {
+  const free = freeOf(band.items);
+  const kept = gutters.map(([a, b]) => free.map(([c, d]) => [Math.max(a, c), Math.min(b, d)]).find(([c, d]) => d - c >= GUTTER));
+  if (kept.some((g) => !g)) return null;
+  const extra = guttersOf(band.items).some(([a, b]) => !kept.some(([c, d]) => c < b && d > a));
+  return extra ? null : kept;
+}
+
+/**
+ * The page's items, with runs of rows whose items sit side by side (columns apart by a gutter on
+ * every row) gathered into regions, each laid out as one borderless Word table: a row per band, a
+ * column per gutter. A fill-in line (a free rule) counts as an item there. A full-width item, code,
+ * and anything crossing a gutter stays in the normal flow.
+ */
+function regionsOf(items, rules) {
+  const bands = bandsOf(items);
+  // a fill-in line on a row (or just under it) is on that row when the row is side by side with it,
+  // unless it runs across a gutter (a separator); under a lone label it stays that label's border
+  const free = new Set(rules);
+  for (const band of bands) {
+    const gutters = guttersOf(band.items);
+    for (const rule of free) {
+      const item = { top: rule.at - RULE_REACH, bottom: rule.at, x0: rule.from, x1: rule.to, rule };
+      const near = rule.at >= band.top && rule.at <= band.bottom + RULE_REACH;
+      if (!near || gutters.some(([a, b]) => rule.from <= a && rule.to >= b) || !guttersOf([...band.items, item]).length) continue;
+      free.delete(rule);
+      band.items.push(item);
+      band.bottom = Math.max(band.bottom, rule.at);
+    }
+  }
+  const out = [];
+  let region = null;
+  for (const band of bands) {
+    const code = band.items.some((it) => it.para?.code);
+    // only rows that are side by side themselves carry a region on (a lone label below ends it)
+    const kept = region && !code && guttersOf(band.items).length && narrowed(region.gutters, band);
+    if (kept) {
+      region.gutters = kept;
+      region.bands.push(band);
+    } else {
+      const gutters = code ? [] : guttersOf(band.items);
+      region = gutters.length && band.items.some((it) => !it.rule) ? { gutters, bands: [band] } : null;
+      if (region) out.push({ region, top: band.top });
+      else out.push(...band.items.filter((it) => !it.rule));
+    }
+    if (region) out.at(-1).bottom = band.bottom;
+  }
+  return out;
+}
+
+/** The children of a layout cell: its items stacked from y, each at its distance below the one before;
+ * and where they end in Word (whose lines are taller than the PDF's line boxes). */
+function cellOf(items, ctx, { left, right, y }) {
+  const lineHeight = ctx.bodySize * LINE_HEIGHT;
+  const rules = items.filter((it) => it.rule).map((it) => it.rule);
+  const out = [];
+  for (const it of items) {
+    if (it.rule?.used) continue;
+    const before = (it.rule ? it.rule.at - lineHeight : it.top) - y;
+    if (it.para) out.push(...paragraphOf(it.para, { ...ctx, rules, fit: true }, { left, right, before }));
+    else if (it.img) out.push(imageOf(it.img, { left, right, before }));
+    else if (it.table) out.push(spacerOf(before), tableOf(it.table, { ...ctx, left }));
+    else {
+      // a fill-in line on its own: an empty paragraph underlined where the line runs
+      it.rule.used = true;
+      out.push(new Paragraph({ spacing: { before: Math.max(0, Math.round(before * TW)), after: 0 },
+        indent: { left: Math.max(0, Math.round((it.rule.from - left) * TW)), right: Math.max(0, Math.round((right - it.rule.to) * TW)) },
+        border: { bottom: { ...borderOf(it.rule), space: 0 } } }));
+    }
+    y = Math.max(y, it.rule ? it.rule.at : wordBottom(it));
+  }
+  // a cell ends with a paragraph (also after a table inside it)
+  if (!out.length || out.at(-1) instanceof Table) out.push(spacerOf(1));
+  return { children: out, bottom: y };
+}
+
+/** A region as a borderless table, its first row starting at y: columns meet mid-gutter (room for a
+ * wider stand-in font), the first starts at its items, the last reaches the margin. */
+function layoutTableOf(region, ctx, { left, right, y }) {
+  const colOf = (it) => region.gutters.filter(([, b]) => b <= it.x0).length;
+  const all = region.bands.flatMap((b) => b.items);
+  const edges = [Math.min(...all.filter((it) => colOf(it) === 0).map((it) => it.x0)), ...region.gutters.map(([a, b]) => (a + b) / 2),
+    Math.max(right, ...all.map((it) => it.x1))];
+  const widths = edges.slice(1).map((x, i) => Math.round((x - edges[i]) * TW));
+  const rows = region.bands.map((band) => {
+    const top = y; // a row's cells start where the row before ended
+    const cells = widths.map((w, c) => cellOf(band.items.filter((it) => colOf(it) === c).sort((a, b) => a.top - b.top), ctx,
+      { left: edges[c], right: edges[c + 1], y: top }));
+    y = Math.max(band.bottom, ...cells.map((cell) => cell.bottom));
+    return new TableRow({ children: cells.map(({ children }, c) => new TableCell({
+      width: { size: widths[c], type: WidthType.DXA }, margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      borders: { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER }, children,
+    })) });
+  });
+  return { bottom: y, table: new Table({ rows, columnWidths: widths, layout: TableLayoutType.FIXED,
+    indent: { size: Math.round((edges[0] - left) * TW), type: WidthType.DXA },
+    width: { size: widths.reduce((a, b) => a + b, 0), type: WidthType.DXA } }) };
 }
 
 // ---------- header and footer ----------
@@ -319,6 +474,11 @@ function bandParagraphs(band, left, right) {
 
 // ---------- document ----------
 
+const extentOf = (bbox) => ({ top: bbox[1], bottom: bbox[3], x0: bbox[0], x1: bbox[2] });
+/** Where an item ends in Word: a paragraph's Word lines are taller than the PDF's line boxes. */
+const wordBottom = (it) => (!it.para || it.para.code ? it.bottom : Math.max(it.bottom,
+  it.top + it.para.lines.reduce((h, l) => h + Math.max(...l.chars.map((c) => c.size)) * LINE_HEIGHT, 0)) + (it.para.ruled ?? 0));
+
 /**
  * @param {Uint8Array} bytes a PDF
  * @returns {Promise<Uint8Array>} a .docx
@@ -334,16 +494,18 @@ export async function pdfToDocx(bytes) {
   const left = allLines.length ? pct(allLines.map((l) => l.bbox[0]), 0.05) : 72;
   const textRight = allLines.length ? pct(allLines.map((l) => l.bbox[2]), 0.95) : first.width - 72;
   const right = Math.max(textRight, ...pages.flatMap((p) => p.tables.map((t) => t.bbox[2]))); // tables fit inside the margins
-  const top = Math.max(18, allLines.length ? pct(allLines.map((l) => l.bbox[1]), 0.02) - 4 : 72);
-  const bottom = Math.max(18, allLines.length ? first.height - pct(allLines.map((l) => l.bbox[3]), 0.98) - 4 : 72);
+  const firstTops = pages.map((p) => Math.min(...p.lines.map((l) => l.bbox[1]), ...p.images.filter((i) => !i.background).map((i) => i.bbox[1])));
+  const top = Math.max(18, allLines.length ? Math.min(pct(allLines.map((l) => l.bbox[1]), 0.02), pct(firstTops, 0.5)) - 4 : 72);
+  // Word's last line reaches lower than the PDF's line box: half a line of room for it
+  const bottom = Math.max(18, allLines.length ? first.height - pct(allLines.map((l) => l.bbox[3]), 0.98) - 4 - bodySize / 2 : 72);
 
   const starts = allLines.map((l) => l.bbox[0]);
   const isIndent = (x) => starts.filter((s) => Math.abs(s - x) <= 1.5).length >= 3;
   const pageItems = pages.map((page) => [
-    ...paragraphsOf(page.lines).map((para) => ({ top: para.bbox[1], bottom: para.bbox[3], para })),
-    ...page.images.filter((img) => !img.background).map((img) => ({ top: img.bbox[1], bottom: img.bbox[3], img })),
-    ...page.tables.map((table) => ({ top: table.bbox[1], bottom: table.bbox[3], table })),
-  ].sort((a, b) => a.top - b.top)); // shortcut: one column; text in side-by-side columns is read row by row
+    ...paragraphsOf(page.lines).map((para) => ({ ...extentOf(para.bbox), para })),
+    ...page.images.filter((img) => !img.background).map((img) => ({ ...extentOf(img.bbox), img })),
+    ...page.tables.map((table) => ({ ...extentOf(table.bbox), table })),
+  ].sort((a, b) => a.top - b.top));
   const hasBackground = (p) => pages[p].images.some((img) => img.background);
   const headingSize = Math.max(0, ...pageItems.flatMap((items, p) => (hasBackground(p) ? []
     : items.filter((it) => it.para && headingOf(it.para, bodySize)).map((it) => it.para.size))));
@@ -375,25 +537,36 @@ export async function pdfToDocx(bytes) {
       pageBreak = false;
     }
     let y = top;
-    pageItems[p].forEach((item, i) => {
+    // side-by-side rows become layout tables; text over a background stays framed instead
+    const entries = framed ? pageItems[p] : regionsOf(pageItems[p], page.rules);
+    entries.forEach((item, i) => {
       const before = item.top - y;
       const breaks = pageBreak && i === 0;
-      if (item.para) {
+      if (item.region) {
+        // Word joins tables with nothing between them; otherwise the gap goes into the first row
+        const apart = breaks || entries[i - 1]?.table || entries[i - 1]?.region;
+        if (apart) children.push(spacerOf(before, breaks));
+        const { table, bottom } = layoutTableOf(item.region, ctx, { left, right, y: apart ? item.top : y });
+        children.push(table);
+        y = Math.max(y, bottom);
+      } else if (item.para) {
         children.push(...paragraphOf(item.para, ctx, { left, right, before, pageBreak: breaks, framed }));
       } else if (item.img) {
         children.push(imageOf(item.img, { left, right, before, pageBreak: breaks }));
       } else {
         // Word merges tables with nothing between them: only a header bar flush on its table may join
-        const prev = pageItems[p][i - 1]?.table;
+        const prev = entries[i - 1]?.table;
         const joins = prev && before <= NEAR_JOIN && Math.abs(prev.bbox[0] - item.table.bbox[0]) <= NEAR_JOIN
           && Math.abs(prev.bbox[2] - item.table.bbox[2]) <= NEAR_JOIN;
-        if (breaks || before > 6 || (prev && !joins)) children.push(new Paragraph({ pageBreakBefore: breaks || undefined, spacing: { before: 0, after: 0, line: Math.max(20, Math.round(before * TW)), lineRule: "exact" } }));
+        if (breaks || before > 6 || (prev && !joins) || entries[i - 1]?.region) children.push(spacerOf(before, breaks));
         children.push(tableOf(item.table, ctx));
       }
-      y = Math.max(y, item.bottom);
+      y = Math.max(y, wordBottom(item));
     });
   });
 
+  // a document ending in a table gets Word's own empty last paragraph, a full line that can spill onto a new page
+  for (const children of sectionChildren) if (children.at(-1) instanceof Table) children.push(spacerOf(1));
   const page = {
     size: { width: Math.round(first.width * TW), height: Math.round(first.height * TW) },
     margin: {

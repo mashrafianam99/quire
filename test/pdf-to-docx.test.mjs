@@ -332,3 +332,72 @@ test("full pages flow on; a page that ended early keeps its page break", async (
   const breaks = [...body.matchAll(/<w:pageBreakBefore\/>[\s\S]*?<w:t[^>]*>(Line \d+ of page \d+\.)/g)].map((m) => m[1]);
   assert.deepEqual(breaks, ["Line 1 of page 3."], "page 2 flows on from page 1; page 3 starts fresh");
 });
+
+/** The cells of each top-level-or-nested Word table row, as their text. */
+const rowsOf = (body) => [...body.matchAll(/<w:tr>([\s\S]*?)<\/w:tr>/g)]
+  .map((m) => m[1].split("<w:tc>").slice(1).map((c) => [...c.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g)].map((t) => t[1]).join("")));
+
+test("form fields side by side on one row become one row of a borderless table, with their fill-in lines", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  page.drawText("Tenant details", { x: 50, y: 720, size: 12, font: helv });
+  for (const [label, x] of [["City:", 50], ["State:", 223], ["ZIP:", 395]]) {
+    page.drawText(label, { x, y: 600, size: 12, font: helv });
+    page.drawLine({ start: { x, y: 595 }, end: { x: x + 150, y: 595 }, thickness: 0.75 });
+  }
+  page.drawText("Name:", { x: 50, y: 500, size: 12, font: helv });
+  page.drawLine({ start: { x: 100, y: 497 }, end: { x: 300, y: 497 }, thickness: 1, dashArray: [1, 1] });
+  page.drawText("A full-width paragraph under the form stays a normal paragraph of text.", { x: 50, y: 400, size: 12, font: helv });
+
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  const rows = rowsOf(body);
+  assert.deepEqual(rows.find((r) => r.includes("City:")), ["City:", "State:", "ZIP:"], "three cells on one row");
+  assert.ok(rows.some((r) => r[0] === "Name:" && r.length === 2), "a label and its fill-in line side by side");
+  assert.match(body, /<w:bottom w:val="dotted"/, "the dotted fill-in line stays dotted");
+  assert.match(body, /<w:bottom w:val="single"[^>]*\/>[\s\S]*?City:/, "the solid line under a label is its border");
+  assert.ok(!rows.flat().some((c) => c.includes("Tenant details") || c.includes("full-width")), "lone items stay out of tables");
+});
+
+test("a small stroked square before a label is a checkbox: ☐ in the label's line, not a table", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  page.drawText("Payment Method:", { x: 50, y: 600, size: 12, font: helv });
+  for (const [label, x] of [["Cash", 180], ["Check", 280]]) {
+    page.drawRectangle({ x, y: 597, width: 13, height: 13, borderColor: rgb(0, 0, 0), borderWidth: 0.5 });
+    page.drawText(label, { x: x + 20, y: 600, size: 12, font: helv });
+  }
+  const bytes = await doc.save();
+
+  const { pages } = analyzePdf(bytes);
+  assert.equal(pages[0].tables.length, 0, "the squares aren't one-cell tables");
+  assert.ok(pages[0].lines.some((l) => l.text === "☐ Cash"), "the box is a ☐ in front of its label");
+  const { body } = await partsOf(await pdfToDocx(bytes));
+  assert.deepEqual(rowsOf(body).find((r) => r.includes("☐ Cash")), ["Payment Method:", "☐ Cash", "☐ Check"]);
+});
+
+test("dark header boxes drawn on top of a grid become its first row, cut at the grid's columns", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const dark = rgb(0.13, 0.18, 0.26);
+  // the grid's columns: 50 | 250 | 350 | 550, five rows of 30pt
+  for (let r = 0; r <= 5; r++) page.drawLine({ start: { x: 50, y: 640 - r * 30 }, end: { x: 550, y: 640 - r * 30 }, thickness: 1 });
+  for (const x of [50, 250, 350, 550]) page.drawLine({ start: { x, y: 640 }, end: { x, y: 490 }, thickness: 1 });
+  // the header as overlapping boxes, not on the column lines
+  page.drawRectangle({ x: 50, y: 640, width: 210, height: 30, color: dark });
+  page.drawRectangle({ x: 245, y: 640, width: 120, height: 30, color: dark });
+  page.drawRectangle({ x: 340, y: 640, width: 210, height: 30, color: dark });
+  for (const [label, x] of [["DESCRIPTION", 110], ["QTY", 290], ["AMOUNT", 420]]) {
+    page.drawText(label, { x, y: 650, size: 12, font: helv, color: rgb(1, 1, 1) });
+  }
+  const bytes = await doc.save();
+
+  const { pages } = analyzePdf(bytes);
+  assert.equal(pages[0].tables.length, 1, "one table");
+  const [table] = pages[0].tables;
+  assert.deepEqual(table.cells.filter((c) => c.row === 0).map((c) => c.lines.map((l) => l.text).join("")), ["DESCRIPTION", "QTY", "AMOUNT"]);
+  assert.deepEqual(table.xs.map(Math.round), [50, 250, 350, 550], "the grid's own columns");
+  assert.ok(table.cells.filter((c) => c.row === 0).every((c) => c.fill === "#212e42"), "the header keeps its fill");
+});
