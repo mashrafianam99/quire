@@ -327,9 +327,10 @@ function tableOf(table, ctx) {
     // rows with text get no height: Word sizes them to their text (an "at least" height made Word's
     // rows taller than the PDF's); a row with nothing in it keeps its own, or it would shrink to one line
     const empty = cells.every((c) => !c.lines.length && !c.images.length);
+    const emptyHeight = Math.round((table.ys[r + 1] - table.ys[r] - 2 * EMPTY_PAD) * TW); // ≤ 0 for a sliver of a row
     rows.push(new TableRow({
       cantSplit: table.ys[r + 1] - table.ys[r] <= ctx.pageHeight * KEEP_ROW || undefined,
-      height: empty ? { value: Math.round((table.ys[r + 1] - table.ys[r] - 2 * EMPTY_PAD) * TW), rule: HeightRule.ATLEAST } : undefined,
+      height: empty && emptyHeight > 0 ? { value: emptyHeight, rule: HeightRule.ATLEAST } : undefined,
       children: cells.map((cell) => {
         const [cx0, cy0, cx1, cy1] = cell.rect;
         // the cell's padding is the gap between its border and its content

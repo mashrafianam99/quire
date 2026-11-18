@@ -153,3 +153,19 @@ test("a scanned page comes out as a picture of the page, kept as JPEG so the .do
   assert.match(body, /<wp:inline/);
   assert.ok(docx.length < 200_000, `${docx.length} bytes`);
 });
+
+test("a table with an empty sliver of a row (thinner than its padding) converts", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([595, 842]);
+  const ys = [700, 676, 673, 649]; // the middle row is a 3pt sliver with nothing in it
+  for (const y of ys) page.drawLine({ start: { x: 72, y }, end: { x: 472, y }, thickness: 0.5 });
+  for (const x of [72, 272, 472]) page.drawLine({ start: { x, y: ys[0] }, end: { x, y: ys.at(-1) }, thickness: 0.5 });
+  page.drawText("Name", { x: 80, y: 684, size: 10, font: helv });
+  page.drawText("Value", { x: 280, y: 684, size: 10, font: helv });
+  page.drawText("Alpha", { x: 80, y: 657, size: 10, font: helv });
+  page.drawText("1", { x: 280, y: 657, size: 10, font: helv });
+
+  const { body } = await partsOf(await pdfToDocx(await doc.save()));
+  assert.match(body, /<w:tbl>[\s\S]*Alpha[\s\S]*<\/w:tbl>/);
+});
