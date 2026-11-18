@@ -196,7 +196,8 @@ function tableOf(table, ctx) {
         // the cell's padding is the gap between its border and its content
         const content = [...cell.lines, ...cell.images].map((x) => x.bbox);
         const inset = (f, fallback) => Math.round(Math.max(0, Math.min(36, content.length ? f() : fallback)) * TW);
-        const padX = inset(() => Math.min(...content.map((b) => b[0])) - cx0, 4);
+        // the narrower side, so centred text isn't squeezed; an empty cell (a gap between boxes) needs none
+        const padX = inset(() => Math.min(Math.min(...content.map((b) => b[0])) - cx0, cx1 - Math.max(...content.map((b) => b[2]))), 0);
         const margins = { left: padX, right: padX,
           top: inset(() => Math.min(...content.map((b) => b[1])) - cy0, 2),
           bottom: inset(() => cy1 - Math.max(...content.map((b) => b[3])), 2) };
@@ -215,7 +216,9 @@ function tableOf(table, ctx) {
       }),
     }));
   }
+  const indent = Math.round((table.bbox[0] - (ctx.left ?? table.bbox[0])) * TW);
   return new Table({ rows, columnWidths: widths, layout: TableLayoutType.FIXED,
+    indent: indent > 2 * TW ? { size: indent, type: WidthType.DXA } : undefined,
     width: { size: widths.reduce((a, b) => a + b, 0), type: WidthType.DXA } });
 }
 
@@ -258,7 +261,7 @@ export async function pdfToDocx(bytes) {
   const isIndent = (x) => starts.filter((s) => Math.abs(s - x) <= 1.5).length >= 3;
   const children = [];
   pages.forEach((page, p) => {
-    const ctx = { bodySize, rules: page.rules, isIndent };
+    const ctx = { bodySize, rules: page.rules, isIndent, left };
     const items = [
       ...paragraphsOf(page.lines).map((para) => ({ top: para.bbox[1], bottom: para.bbox[3], para })),
       ...page.images.filter((img) => !img.background).map((img) => ({ top: img.bbox[1], bottom: img.bbox[3], img })),

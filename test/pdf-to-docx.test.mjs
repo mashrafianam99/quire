@@ -86,3 +86,38 @@ test("a table drawn as rows (no column lines) becomes a Word table", async () =>
   const { body } = await partsOf(await pdfToDocx(bytes));
   assert.match(body, /<w:tbl>[\s\S]*Singleton[\s\S]*One instance[\s\S]*<\/w:tbl>/);
 });
+
+const rounded = (w, h, r) => `M ${r} 0 H ${w - r} Q ${w} 0 ${w} ${r} V ${h - r} Q ${w} ${h} ${w - r} ${h} H ${r} Q 0 ${h} 0 ${h - r} V ${r} Q 0 0 ${r} 0 Z`;
+
+test("coloured boxes keep their fill (and accent bar) behind editable text; a highlight in a line isn't a box", async () => {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  // a callout: a light rounded box with a 6pt accent bar on its left
+  page.drawSvgPath(rounded(400, 60, 6), { x: 72, y: 740, color: rgb(0.93, 0.95, 0.97) });
+  page.drawRectangle({ x: 72, y: 680, width: 6, height: 60, color: rgb(0.24, 0.35, 0.54) });
+  page.drawText("Callout title", { x: 90, y: 718, size: 11, font: helv });
+  page.drawText("Callout body text.", { x: 90, y: 698, size: 11, font: helv });
+  // two dark cards side by side with white labels
+  for (const [x, label] of [[72, "Creational"], [282, "Structural"]]) {
+    page.drawSvgPath(rounded(190, 26, 5), { x, y: 640, color: rgb(0.23, 0.49, 0.45) });
+    page.drawText(label, { x: x + 60, y: 623, size: 11, font: helv, color: rgb(1, 1, 1) });
+  }
+  // a grey highlight behind one word of a sentence
+  page.drawRectangle({ x: 150, y: 556, width: 40, height: 16, color: rgb(0.9, 0.9, 0.9) });
+  page.drawText("A sentence with a highlighted word inside it.", { x: 72, y: 560, size: 11, font: helv });
+  const bytes = await doc.save();
+
+  const boxes = analyzePdf(bytes).pages[0].tables.filter((t) => t.box);
+  assert.equal(boxes.length, 2, "the callout and the row of cards");
+  const [callout, cards] = boxes.sort((a, b) => a.bbox[1] - b.bbox[1]);
+  assert.equal(callout.cells[0].fill, "#edf2f7");
+  assert.equal(callout.cells[0].borders.left?.color, "#3d598a", "the accent bar is the left border");
+  assert.deepEqual(cards.cells.map((c) => c.lines.map((l) => l.text).join()), ["Creational", "", "Structural"], "one row, with the gap as an empty cell");
+
+  const { body, text } = await partsOf(await pdfToDocx(bytes));
+  assert.match(body, /w:fill="edf2f7"[\s\S]*Callout title[\s\S]*Callout body text\./, "callout text sits in its shaded cell");
+  assert.match(body, /w:fill="3b7d73"[\s\S]*Creational[\s\S]*Structural/, "white labels keep their dark fill");
+  assert.ok(text.includes("A sentence with a highlighted word inside it."), "the highlighted line stays a paragraph");
+  assert.ok(!/<w:tbl>(?:(?!<\/w:tbl>)[\s\S])*A sentence/.test(body), "and isn't put in a box");
+});

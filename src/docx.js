@@ -425,7 +425,8 @@ function makeConverter({ styles, numbering, images }) {
     const lastCol = Math.max(grid.length, ...rows.map((r) => r.reduce((n, c) => n + c.span, 0)));
     const extraRun = styleChain(styles.styles, styleId, "rPr");
     const total = grid.reduce((a, b) => a + b, 0);
-    let html = `<table style="border-collapse: collapse; width: ${total ? `${total.toFixed(1)}pt` : "100%"}">`;
+    const indent = num(attr(kid(tblPr, "tblInd"), "w")) / 20 || 0;
+    let html = `<table style="border-collapse: collapse; width: ${total ? `${total.toFixed(1)}pt` : "100%"}${indent > 0 ? `; margin-left: ${indent.toFixed(1)}pt` : ""}">`;
     rows.forEach((row, r) => {
       html += "<tr>";
       for (const cell of row) {
@@ -441,7 +442,8 @@ function makeConverter({ styles, numbering, images }) {
           ...cellBorders(tblBorders, styleBorders, kid(cell.tcPr, "tcBorders"), edges),
           "background-color": hex(attr(kid(cell.tcPr, "shd"), "fill")),
           "vertical-align": { center: "middle", bottom: "bottom" }[val(cell.tcPr, "vAlign")] ?? "top",
-          width: width ? `${width.toFixed(1)}pt` : null,
+          // a Word cell width includes its padding; a CSS one doesn't
+          width: width ? `${Math.max(0, width - ((pad.left ?? 0) + (pad.right ?? 0)) / 20).toFixed(1)}pt` : null,
           padding: ["top", "right", "bottom", "left"].map((s) => `${((pad[s] ?? 0) / 20).toFixed(1)}pt`).join(" "),
         });
         const spans = `${cell.span > 1 ? ` colspan="${cell.span}"` : ""}${rowspan > 1 ? ` rowspan="${rowspan}"` : ""}`;

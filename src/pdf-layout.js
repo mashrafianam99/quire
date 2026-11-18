@@ -96,7 +96,7 @@ function vectorsOf(page) {
       for (const pts of subpaths(path, ctm)) {
         if (slanted(pts)) {
           const bbox = cut(boundsOf(pts));
-          if (bbox) shapes.push({ bbox, closed: closedPath(pts) });
+          if (bbox) shapes.push({ bbox, closed: closedPath(pts), fill: c });
         }
         const rect = axisRect(pts) && cut(axisRect(pts));
         if (!rect) continue;
@@ -404,6 +404,87 @@ function ruledTablesOf(segments, boxes, lines) {
 
 const center = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 const inside = (r, [x, y]) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+const areaOf = (r) => (r[2] - r[0]) * (r[3] - r[1]);
+
+// ---------- coloured boxes ----------
+
+const EDGE_NEAR = 4; // pt; a border or accent bar this close to a box's edge belongs to it
+const EDGE_COVER = 0.6; // share of a box's side a line must run along to be that side's border
+const COLUMN_PAD = 4; // pt; a header bar's column starts this far left of its text
+const BAR = 6; // pt; a filled box this thin along a box's side is its accent bar (Word borders go up to 6pt)
+const ROW_GAP_MAX = 24; // pt; boxes side by side closer than this are one row (header cells, cards)
+
+/**
+ * Coloured boxes with text in them (callouts, header bars, badges, tags): filled shapes, square or
+ * rounded, holding whole lines. Each becomes a one-row table, so Word keeps the fill behind its
+ * text (white text stays readable) and the box grows with the text. The smallest box wins a line:
+ * a box inside another keeps its text and the outer one is dropped. Lines side by side in one row
+ * (a header bar) get a column each; borders and accent bars along the box's sides are kept.
+ * shortcut: rounded corners become square and gradients (fillShade) aren't seen; picture a box
+ * (option 1 in CLAUDE.md) if its look matters.
+ */
+function boxTablesOf({ shapes, boxes, segments }, lines, images, pageArea, taken) {
+  const overlaps = (r, b) => Math.min(r[2], b[2]) - Math.max(r[0], b[0]) > 1 && Math.min(r[3], b[3]) - Math.max(r[1], b[1]) > 1;
+  const fills = [...shapes.filter((s) => s.closed && s.fill).map((s) => ({ rect: s.bbox, color: s.fill })), ...boxes]
+    .filter((b) => b.color !== "#ffffff" && areaOf(b.rect) < pageArea * 0.5 && !taken(b.rect))
+    .sort((a, b) => areaOf(a.rect) - areaOf(b.rect));
+  // borders and accent bars: thin lines, and thin filled boxes, as segments along their length
+  const edges = [...segments, ...boxes.flatMap(({ rect: [x0, y0, x1, y1], color }) => {
+    if (x1 - x0 <= BAR && y1 - y0 > x1 - x0) return [{ dir: "v", at: (x0 + x1) / 2, from: y0, to: y1, width: x1 - x0, color }];
+    if (y1 - y0 <= BAR && x1 - x0 > y1 - y0) return [{ dir: "h", at: (y0 + y1) / 2, from: x0, to: x1, width: y1 - y0, color }];
+    return [];
+  })];
+  const claimed = new Set();
+  const tables = [];
+  for (const { rect, color } of fills) {
+    const within = (l) => l.bbox[0] >= rect[0] - 2 && l.bbox[2] <= rect[2] + 2;
+    const held = lines.filter((l) => inside(rect, center(l.bbox)));
+    // a box must hold whole lines: one that a line runs out of is a highlight or badge in that line
+    if (!held.length || held.some((l) => claimed.has(l) || !within(l))) continue;
+    if (lines.some((l) => !held.includes(l) && overlaps(rect, l.bbox))) continue;
+    held.forEach((l) => claimed.add(l));
+    const oneRow = held.length > 1 && held.every((l) => l.bbox[1] < held[0].bbox[3] && l.bbox[3] > held[0].bbox[1]);
+    const starts = oneRow ? held.map((l) => l.bbox[0] - COLUMN_PAD).filter((x) => x > rect[0] + COLUMN_PAD).sort((a, b) => a - b) : [];
+    const xs = [rect[0], ...starts, rect[2]];
+    const ys = [rect[1], rect[3]];
+    const along = (dir, at, from, to) => edges.find((s) => s.dir === dir && Math.abs(s.at - at) <= EDGE_NEAR
+      && Math.min(s.to, to) - Math.max(s.from, from) >= (to - from) * EDGE_COVER);
+    const side = (s) => (s ? { width: s.width, color: s.color } : null);
+    const [top, bottom] = [along("h", rect[1], rect[0], rect[2]), along("h", rect[3], rect[0], rect[2])];
+    const [left, right] = [along("v", rect[0], rect[1], rect[3]), along("v", rect[2], rect[1], rect[3])];
+    const cells = xs.slice(1).map((x1, c) => {
+      const r = [xs[c], rect[1], x1, rect[3]];
+      return { row: 0, col: c, rowSpan: 1, colSpan: 1, rect: r, fill: color,
+        borders: { top: side(top), bottom: side(bottom), left: c === 0 ? side(left) : null, right: c === xs.length - 2 ? side(right) : null },
+        lines: held.filter((l) => inside(r, center(l.bbox))), images: images.filter((img) => inside(r, center(img.bbox))) };
+    });
+    tables.push({ bbox: [...rect], xs, ys, cells, segments: [top, bottom, left, right].filter(Boolean), box: true });
+  }
+  return rowsOfBoxes(tables);
+}
+
+/** Boxes side by side with the same top and bottom (a header row drawn cell by cell, a row of
+ * cards) joined into one table, with an empty cell for each gap, so Word keeps them in one row. */
+function rowsOfBoxes(tables) {
+  const rows = [];
+  for (const t of [...tables].sort((a, b) => a.bbox[0] - b.bbox[0])) {
+    const row = rows.find((r) => Math.abs(r.ys[0] - t.ys[0]) <= NEAR && Math.abs(r.ys[1] - t.ys[1]) <= NEAR
+      && t.bbox[0] >= r.bbox[2] - NEAR && t.bbox[0] - r.bbox[2] <= ROW_GAP_MAX);
+    if (!row) { rows.push({ ...t, xs: [...t.xs], cells: [...t.cells] }); continue; }
+    const gap = t.bbox[0] - row.bbox[2] > NEAR;
+    const at = row.xs.length - 1 + (gap ? 1 : 0); // the column t's first cell lands in
+    if (gap) {
+      row.cells.push({ row: 0, col: row.xs.length - 1, rowSpan: 1, colSpan: 1, rect: [row.bbox[2], row.ys[0], t.bbox[0], row.ys[1]],
+        fill: null, borders: { top: null, bottom: null, left: null, right: null }, lines: [], images: [] });
+      row.xs.push(t.bbox[0]);
+    }
+    row.cells.push(...t.cells.map((c) => ({ ...c, col: c.col + at })));
+    row.xs.push(...t.xs.slice(1));
+    row.segments = [...row.segments, ...t.segments];
+    row.bbox = union(row.bbox, t.bbox);
+  }
+  return rows;
+}
 
 const ROW_GAP = 1.5; // in font sizes; pieces of text on one baseline closer than this are one line
 
@@ -517,11 +598,19 @@ export function analyzePdf(bytes) {
       };
       for (const l of lines) cellAt(l.bbox)?.lines.push(l);
       for (const img of images) cellAt(img.bbox)?.images.push(img);
+      const freeLines = joinRows(lines.filter((l) => !cellAt(l.bbox)));
+      const freeImages = images.filter((img) => !cellAt(img.bbox));
+      // a box inside a table or diagram is part of it; one around a table or diagram is just a panel
+      const solid = [...tables.map((t) => t.bbox), ...diagrams];
+      const taken = (r) => solid.some((b) => inside(b, center(r)) || inside(r, center(b)));
+      const boxTables = boxTablesOf(vectors, freeLines, freeImages.filter((img) => !img.figure), pageArea, taken);
+      const inBox = (b) => boxTables.some((t) => t.cells.some((c) => c.lines.some((l) => l.bbox === b) || c.images.some((i) => i.bbox === b)));
+      tables.push(...boxTables);
       const tableSegments = new Set(tables.flatMap((t) => t.segments));
       pages.push({
         width: x1 - x0, height: y1 - y0,
-        lines: joinRows(lines.filter((l) => !cellAt(l.bbox))),
-        images: images.filter((img) => !cellAt(img.bbox)),
+        lines: freeLines.filter((l) => !inBox(l.bbox)),
+        images: freeImages.filter((img) => !inBox(img.bbox)),
         tables,
         rules: segments.filter((s) => s.dir === "h" && !tableSegments.has(s) && s.to - s.from > 20),
       });
