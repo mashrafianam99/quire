@@ -98,7 +98,7 @@ function vectorsOf(page) {
       for (const pts of subpaths(path, ctm)) {
         if (slanted(pts)) {
           const bbox = cut(boundsOf(pts));
-          if (bbox) shapes.push({ bbox, closed: closedPath(pts), fill: c });
+          if (bbox) shapes.push({ bbox, closed: true, fill: c }); // filling closes every subpath
         }
         const rect = axisRect(pts) && cut(axisRect(pts));
         if (!rect) continue;
@@ -220,12 +220,23 @@ function picture(page, [x0, y0, x1, y1], { withText = true } = {}) {
   pix.clear(255);
   const draw = new mupdf.DrawDevice(Matrix.scale(s, s), pix);
   // every drawing call goes on to the draw device, except text when it's left out
-  const device = withText ? draw : new mupdf.Device(Object.fromEntries(DEVICE_CALLS
-    .filter((name) => !TEXT_CALLS.has(name)).map((name) => [name, (...args) => draw[name](...args)])));
+  const forward = Object.fromEntries(DEVICE_CALLS.filter((name) => !TEXT_CALLS.has(name))
+    .map((name) => [name, (...args) => draw[name](...args)]));
+  // mupdf.js 1.28 hands a JS device a Shade it holds no reference to; once garbage collected, its
+  // finalizer would free the page's shading a second time and corrupt the heap. Leave it to MuPDF.
+  forward.fillShade = (shade, ...rest) => { mupdf.Shade._finalizer?.unregister(shade); draw.fillShade(shade, ...rest); };
+  // an alpha mask comes with no colour space and no backdrop colour, which DrawDevice won't take
+  forward.beginMask = (area, luminosity, colorspace, color) => {
+    const cs = colorspace?.pointer ? colorspace : mupdf.ColorSpace.DeviceGray;
+    draw.beginMask(area, luminosity, cs, color.length ? color : Array(cs.getNumberOfComponents()).fill(0));
+  };
+  const device = withText ? draw : new mupdf.Device(forward);
   page.run(device, Matrix.identity);
   device.close();
   if (device !== draw) draw.close();
-  return { bbox: [x0, y0, x1, y1], png: pix.asPNG(), figure: true, background: !withText };
+  const png = pix.asPNG();
+  pix.destroy(); // MuPDF's memory never shrinks: free each picture as soon as it's encoded
+  return { bbox: [x0, y0, x1, y1], data: png, type: "png", figure: true, background: !withText };
 }
 
 /** Font facts from MuPDF's font object and its name ("ABCDEF+Carlito-BoldItalic" -> Carlito). */
@@ -242,19 +253,30 @@ function fontOf(font) {
   };
 }
 
+const PHOTO_PIXELS = 1e6; // an opaque picture this big (a scanned page, a photo) is kept as JPEG
+const PHOTO_QUALITY = 85;
+
+/** A picture's bytes for Word: PNG keeps small pictures and transparency exact; a big opaque one
+ * as PNG would make a scanned document's .docx many times the size of the PDF. */
+const encoded = (pix) => (!pix.getAlpha() && pix.getWidth() * pix.getHeight() >= PHOTO_PIXELS
+  ? { data: pix.asJPEG(PHOTO_QUALITY), type: "jpg" } : { data: pix.asPNG(), type: "png" });
+
 /** Text lines and pictures, in MuPDF's reading order. */
 function contentOf(page) {
   const lines = [];
   const images = [];
   let block = -1;
   let line = null;
-  page.toStructuredText("preserve-images,preserve-whitespace").walk({
+  const text = page.toStructuredText("preserve-images,preserve-whitespace");
+  text.walk({
     onImageBlock(bbox, transform, image) {
       try {
-        let pix = image.toPixmap();
-        const n = pix.getColorSpace()?.getNumberOfComponents();
-        if (n && n !== 1 && n !== 3) pix = pix.convertToColorSpace(mupdf.ColorSpace.DeviceRGB, true);
-        images.push({ bbox: [...bbox], png: pix.asPNG() });
+        const decoded = image.toPixmap();
+        const n = decoded.getColorSpace()?.getNumberOfComponents();
+        const pix = n && n !== 1 && n !== 3 ? decoded.convertToColorSpace(mupdf.ColorSpace.DeviceRGB, true) : decoded;
+        images.push({ bbox: [...bbox], ...encoded(pix) });
+        // a scanned page's picture is tens of MB decoded, and MuPDF's memory never shrinks
+        for (const p of new Set([decoded, pix])) p.destroy();
       } catch {
         // a picture MuPDF can't decode is left out rather than failing the whole conversion
       }
@@ -269,6 +291,7 @@ function contentOf(page) {
       if (line.chars.some((ch) => ch.c.trim())) lines.push({ ...line, text: line.chars.map((ch) => ch.c).join("") });
     },
   });
+  text.destroy();
   return { lines, images };
 }
 
@@ -798,6 +821,7 @@ export function analyzePdf(bytes) {
         tables,
         rules: segments.filter((s) => s.dir === "h" && !tableSegments.has(s) && s.to - s.from > 20),
       });
+      page.destroy();
     }
     return { pages, ...bandsOf(pages) };
   } finally {

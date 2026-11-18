@@ -114,7 +114,7 @@ function runsOf(para, bodySize, { stripMark = false, pad = 0, keepGaps = false }
       const n = line.text.match(LIST_MARK)[0].length;
       chars = chars.slice(n);
     }
-    if (i > 0) {
+    if (i > 0 && runs.length) {
       const prevText = runs.at(-1)?.text ?? "";
       if (!/[-\s]$/.test(prevText)) runs.at(-1).text += " ";
     }
@@ -244,13 +244,13 @@ function imageOf(img, { left, right, before = 0, pageBreak = false }) {
     indent: centered ? undefined : { left: Math.max(0, Math.round((x0 - left) * TW)) },
     pageBreakBefore: pageBreak || undefined,
     spacing: { before: Math.max(0, Math.round(before * TW)), after: 0 },
-    children: [new ImageRun({ type: "png", data: img.png,
+    children: [new ImageRun({ type: img.type, data: img.data,
       transformation: { width: Math.round((x1 - x0) * scale * PX), height: Math.round((y1 - y0) * scale * PX) } })],
   });
 }
 
 const backgroundOf = (img) => new ImageRun({
-  type: "png", data: img.png,
+  type: img.type, data: img.data,
   transformation: { width: Math.round((img.bbox[2] - img.bbox[0]) * PX), height: Math.round((img.bbox[3] - img.bbox[1]) * PX) },
   floating: {
     horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: Math.round(img.bbox[0] * EMU) },
