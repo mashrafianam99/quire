@@ -20,8 +20,11 @@ const HANG_MAX = 4;              // a list item's text may start up to 4 font si
 const JOIN_GAP = 1.2;            // pieces on one baseline closer than this (font sizes) are one line; wider gaps are table cells
 const SPACE_GAP = 0.25;          // a gap wider than this (in font sizes) between pieces is a space
 const DEFAULT_LEADING = 1.2;
+const UNDERLINE_DROP = 0.12;      // an added underline sits this many font sizes below the baseline...
+const UNDERLINE_THICKNESS = 0.06; // ...and is this thick (close to common fonts' own underline metrics)
 
 const apply = ([a, b, c, d, e, f], [x, y]) => [x * a + y * c + e, x * b + y * d + f];
+const point = ([x, y]) => ({ x, y });
 const LIST_MARKER = /^\s*([•●▪◦‣■□–\-*]|\d{1,3}[.)]|[a-zA-Z][.)])\s/;
 
 function openPdf(bytes) {
@@ -552,16 +555,25 @@ function pageFontNames(page) {
 function resolveStyles(para, runs, fontNames) {
   const base = Math.max(0, para.styles.findIndex((s) => s.font.rawName === para.font.rawName));
   const siblings = fontNames.map((n) => describeFont(n, false, false, false));
-  return runs.map(({ text, style = base, bold, italic }) => {
-    const own = para.styles[style] ?? para.styles[base];
-    const want = { bold: bold ?? own.font.bold, italic: italic ?? own.font.italic };
+  const fontFor = (own, want) => {
     const fits = (f) => f.bold === want.bold && f.italic === want.italic;
-    if (fits(own.font)) return { text, style: own };
+    if (fits(own.font)) return own;
     const same = para.styles.find((s) => fits(s.font) && s.size === own.size && s.color.join() === own.color.join()
       && fontStem(s.font.name) === fontStem(own.font.name));
-    if (same) return { text, style: same };
+    if (same) return same;
     const sibling = siblings.find((f) => fits(f) && fontStem(f.name) === fontStem(own.font.name));
-    return { text, style: { ...own, font: sibling ?? { ...own.font, ...want, rawName: null } } };
+    return { ...own, font: sibling ?? { ...own.font, ...want, rawName: null } };
+  };
+  const made = new Map(); // one style object per look, so each font is embedded once
+  return runs.map(({ text, style = base, bold, italic, underline = false, color }) => {
+    const own = para.styles[style] ?? para.styles[base];
+    const want = { bold: bold ?? own.font.bold, italic: italic ?? own.font.italic };
+    const key = [style, want.bold, want.italic, underline, color?.join()].join("|");
+    if (!made.has(key)) {
+      const styled = fontFor(own, want);
+      made.set(key, underline || color ? { ...styled, underline, color: color ?? styled.color } : styled);
+    }
+    return { text, style: made.get(key) };
   });
 }
 
@@ -720,12 +732,25 @@ export async function replaceParagraph(bytes, para, content, { allowOverflow = t
     let y = firstPage[1] + shift * dy + i * leading * ny;
     for (const { text: piece, style } of segments(text, styleAt, start, end)) {
       const color = pdfColor(style.color);
+      const from = [x, y];
       for (const run of fonts.get(style).runs(piece)) {
         const [ux, uy] = apply(para.toUser, [x, y]);
         page.drawText(run.text, { x: ux, y: uy, size: style.size, font: run.font, color, rotate: degrees(para.angle) });
         const w = run.font.widthOfTextAtSize(run.text, style.size);
         x += w * dx;
         y += w * dy;
+      }
+      // the underline stops at the piece's last letter, not its trailing space (as in Word)
+      const inked = piece.trimEnd();
+      if (style.underline && inked) {
+        const width = fonts.get(style).width(inked, style.size);
+        const below = style.size * UNDERLINE_DROP;
+        const [sx, sy] = [from[0] + below * nx, from[1] + below * ny];
+        page.drawLine({
+          start: point(apply(para.toUser, [sx, sy])),
+          end: point(apply(para.toUser, [sx + width * dx, sy + width * dy])),
+          thickness: style.size * UNDERLINE_THICKNESS, color,
+        });
       }
     }
   });

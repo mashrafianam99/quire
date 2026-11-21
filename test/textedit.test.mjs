@@ -412,6 +412,58 @@ test("making a word bold uses the page's own bold font, else a standard bold", a
   assert.deepEqual(fontsOfWord(italic.bytes, "wonderful"), ["Times-Italic"]);
 });
 
+// ---------- underline and colour ----------
+
+/** The colour (0xRRGGBB) of each letter of the first occurrence of `word` on page 1. */
+function colorsOfWord(bytes, word) {
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf");
+  try {
+    const chars = [];
+    const hex = (color) => color.map((v) => Math.round(v * 255)).reduce((n, v) => n * 256 + v, 0);
+    doc.loadPage(0).toStructuredText().walk({ onChar(c, o, font, size, quad, color) { chars.push({ c, rgb: hex(color) }); } });
+    const at = chars.map((ch) => ch.c).join("").indexOf(word);
+    assert.ok(at >= 0, `"${word}" is on the page`);
+    return [...new Set(chars.slice(at, at + word.length).map((ch) => ch.rgb))];
+  } finally {
+    doc.destroy();
+  }
+}
+
+/** Which of the x positions (pt, page 1) have a red pixel just below the baseline at `baseline` (pt from the top). */
+function redBelow(bytes, xs, baseline) {
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf");
+  try {
+    const pix = doc.loadPage(0).toPixmap(mupdf.Matrix.scale(4, 4), mupdf.ColorSpace.DeviceRGB, false);
+    const [w, px] = [pix.getWidth(), pix.getPixels()];
+    return xs.filter((x) => [1, 1.5, 2, 2.5].some((d) => { // an underline sits 1–2.5 pt below the baseline
+      const at = (Math.round((baseline + d) * 4) * w + Math.round(x * 4)) * 3;
+      return px[at] > 180 && px[at + 1] < 90 && px[at + 2] < 90;
+    }));
+  } finally {
+    doc.destroy();
+  }
+}
+
+test("a word given a colour is written in it, and the rest keeps the paragraph's colour", async () => {
+  const bytes = await styledPdf();
+  const para = findParagraph(bytes, 0, [100, 643]);
+  const runs = [{ text: "Only ", style: 0 }, { text: "regular", style: 0, color: [1, 0, 0] }, { text: " text in this other paragraph.", style: 0 }];
+  const result = await replaceParagraph(bytes, para, runs);
+  assert.deepEqual(colorsOfWord(result.bytes, "regular"), [0xff0000]);
+  assert.deepEqual(colorsOfWord(result.bytes, "Only"), [0x000000]);
+  assert.deepEqual(fontsOfWord(result.bytes, "regular"), ["LiberationSans"], "colour alone keeps the font");
+});
+
+test("an underlined word gets a line under it, in its colour, and only under it", async () => {
+  const bytes = await styledPdf();
+  const para = findParagraph(bytes, 0, [100, 643]);
+  const runs = [{ text: "Only ", style: 0 }, { text: "regular", style: 0, underline: true, color: [1, 0, 0] }, { text: " text in this other paragraph.", style: 0 }];
+  const result = await replaceParagraph(bytes, para, runs);
+  // "Only " is ~29 pt wide at 12 pt Liberation Sans, "regular" ~39 pt: x 72–101 then 101–140
+  const baseline = 800 - 640;
+  assert.deepEqual(redBelow(result.bytes, [80, 95, 105, 120, 135, 150, 200], baseline), [105, 120, 135]);
+});
+
 test("pages with whitespace-only lines still work", async () => {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);
