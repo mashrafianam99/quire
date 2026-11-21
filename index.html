@@ -6,39 +6,110 @@
   <meta name="color-scheme" content="light dark" />
   <title>Quire</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='3' width='20' height='26' rx='3' fill='%230f766e'/%3E%3Cpath d='M11 10h10M11 15h10M11 20h6' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <script>/* the chosen theme, before anything is drawn (theme.js handles changes) */
+    try { const t = localStorage.getItem("quire-theme"); if (["light", "dark", "warm", "grey"].includes(t)) document.documentElement.dataset.theme = t; } catch { /* storage blocked */ }
+  </script>
   <script type="module" src="/src/main.js"></script>
 </head>
 <body>
 <div id="app" class="empty">
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-select" viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"/></symbol>
+    <symbol id="i-highlight" viewBox="0 0 24 24"><path d="M14 4l6 6-8 8H6v-6z"/><path d="M4 21h9"/></symbol>
+    <symbol id="i-draw" viewBox="0 0 24 24"><path d="M3 17c3-3 5 2 8-1s3-8 6-8 3 4 4 4"/></symbol>
+    <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M21 16l-5-5-8 8"/></symbol>
+    <symbol id="i-sign" viewBox="0 0 24 24"><path d="M3 16c2 0 3-6 5-6s1 6 3 6 2-3 4-3 2 2 6 2"/><path d="M3 20h18"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+    <symbol id="i-redact" viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="5" rx="1" fill="currentColor"/><path d="M3 6h11M3 19h15"/></symbol>
+    <symbol id="i-form" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M6 7h5M6 17h3"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 000 10h3"/></symbol>
+    <symbol id="i-tools" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></symbol>
+    <symbol id="i-combine" viewBox="0 0 24 24"><rect x="3" y="3" width="11" height="14" rx="1.5"/><path d="M10 21h9a2 2 0 002-2V8"/></symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><path d="M6 9h1M17 9h1M6 13h1M17 13h1"/></symbol>
+    <symbol id="i-ocr" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3"/><path d="M8 10h8M8 14h5"/></symbol>
+    <symbol id="i-compress" viewBox="0 0 24 24"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 001 1h12a1 1 0 001-1V9M10 13h4"/></symbol>
+    <symbol id="i-word" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11l1.5 6 1.5-4 1.5 4 1.5-6"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2z"/><path d="M4 21a2 2 0 012-2h13"/></symbol>
+    <symbol id="i-grey" viewBox="0 0 24 24"><rect x="3" y="5" width="6" height="14" rx="1" fill="currentColor" opacity=".9"/><rect x="9" y="5" width="6" height="14" fill="currentColor" opacity=".45"/><rect x="15" y="5" width="6" height="14" rx="1"/></symbol>
+  </svg>
+
   <header class="topbar">
     <div class="brand"><span class="brand-mark"></span>Quire</div>
     <nav id="tabs" class="tabs" role="tablist" aria-label="Open documents"></nav>
-    <button class="btn" data-open title="Open (Ctrl+O)">Open</button>
+    <button class="btn icon theme-button" popovertarget="theme-menu" aria-haspopup="menu" aria-label="Theme" title="Theme: light, dark, warm or greyscale"><svg class="i"><use href="#i-theme"/></svg></button>
+    <div id="theme-menu" class="more-menu theme-menu" popover role="menu" aria-label="Theme">
+      <p class="menu-heading">Theme</p>
+      <button class="menu-item" role="menuitemradio" data-theme-choice="system"><svg class="i"><use href="#i-device"/></svg><span><b>Same as device</b><small>Follows your light/dark setting</small></span></button>
+      <button class="menu-item" role="menuitemradio" data-theme-choice="light"><svg class="i"><use href="#i-sun"/></svg><span><b>Light</b></span></button>
+      <button class="menu-item" role="menuitemradio" data-theme-choice="dark"><svg class="i"><use href="#i-moon"/></svg><span><b>Dark</b></span></button>
+      <p class="menu-heading">Easy reading</p>
+      <button class="menu-item" role="menuitemradio" data-theme-choice="warm"><svg class="i"><use href="#i-book"/></svg><span><b>Warm</b><small>Paper-coloured, pages tinted sepia</small></span></button>
+      <button class="menu-item" role="menuitemradio" data-theme-choice="grey"><svg class="i"><use href="#i-grey"/></svg><span><b>Greyscale</b><small>No colour, pages included</small></span></button>
+    </div>
+    <button class="btn" data-open title="Open (Ctrl+O)"><svg class="i"><use href="#i-open"/></svg><span>Open</span></button>
+    <button class="btn primary doc-only" id="save" title="Save (Ctrl+S)"><svg class="i"><use href="#i-save"/></svg><span>Save</span></button>
   </header>
 
   <div class="toolbar" role="toolbar" aria-label="Document tools">
-    <div class="group">
-      <button class="btn primary" id="save" title="Save (Ctrl+S)">Save</button>
-      <button class="btn" id="print" title="Print (Ctrl+P)">Print</button>
-      <button class="btn" id="combine" title="Append other PDFs to this one">Combine files</button>
-      <button class="btn" id="compare" title="Compare this PDF with an earlier version">Compare</button>
-      <button class="btn" id="ocr" title="Make scanned pages searchable (OCR)">Recognize text</button>
-      <button class="btn" id="compress" title="Make the file smaller (big images are reduced)">Compress</button>
-      <button class="btn" id="pdfa" title="Make an archival PDF/A-2b (fonts and colours built in, nothing that runs)">PDF/A</button>
-      <button class="btn" id="to-word" title="Save as an editable Word document (.docx)">To Word</button>
-    </div>
     <div class="group tools" aria-label="Edit mode">
-      <button class="btn" data-tool="SELECT" aria-pressed="true" title="Select (Esc)">Select</button>
-      <button class="btn" data-tool="HIGHLIGHT" aria-pressed="false" title="Highlight text">Highlight</button>
-      <button class="btn" data-tool="DRAW" aria-pressed="false" title="Draw freehand">Draw</button>
-      <button class="btn" data-tool="TEXT" aria-pressed="false" title="Add text">Text</button>
-      <button class="btn" id="add-image" title="Add a picture to this page">Image</button>
-      <button class="btn" id="sign" title="Add your signature">Sign</button>
-      <button class="btn" id="edit-text" aria-pressed="false" title="Click a line of text to change it">Edit text</button>
-      <button class="btn" id="redact" aria-pressed="false" title="Permanently remove text and images">Redact</button>
-      <button class="btn" id="form-design" aria-pressed="false" title="Add, move and change fillable form fields">Form</button>
+      <button class="btn tool" data-tool="SELECT" aria-pressed="true" title="Select (Esc)"><svg class="i"><use href="#i-select"/></svg><span>Select</span></button>
+      <button class="btn tool" data-tool="HIGHLIGHT" aria-pressed="false" title="Highlight text"><svg class="i"><use href="#i-highlight"/></svg><span>Highlight</span></button>
+      <button class="btn tool" data-tool="DRAW" aria-pressed="false" title="Draw freehand"><svg class="i"><use href="#i-draw"/></svg><span>Draw</span></button>
+      <button class="btn tool" data-tool="TEXT" aria-pressed="false" title="Add text"><svg class="i"><use href="#i-text"/></svg><span>Text</span></button>
+      <button class="btn tool" id="add-image" title="Add a picture to this page"><svg class="i"><use href="#i-image"/></svg><span>Image</span></button>
+      <button class="btn tool" id="sign" title="Add your signature"><svg class="i"><use href="#i-sign"/></svg><span>Sign</span></button>
+      <span class="divider" aria-hidden="true"></span>
+      <button class="btn tool" id="edit-text" aria-pressed="false" title="Click a line of text to change it"><svg class="i"><use href="#i-edit"/></svg><span>Edit text</span></button>
+      <button class="btn tool" id="redact" aria-pressed="false" title="Permanently remove text and images"><svg class="i"><use href="#i-redact"/></svg><span>Redact</span></button>
+      <button class="btn tool" id="form-design" aria-pressed="false" title="Add, move and change fillable form fields"><svg class="i"><use href="#i-form"/></svg><span>Form</span></button>
     </div>
+    <div class="group view">
+      <button class="btn icon" id="undo" aria-label="Undo" title="Undo (Ctrl+Z)"><svg class="i"><use href="#i-undo"/></svg></button>
+      <button class="btn icon" id="redo" aria-label="Redo" title="Redo (Ctrl+Y)"><svg class="i"><use href="#i-redo"/></svg></button>
+      <span class="divider" aria-hidden="true"></span>
+      <label class="page-nav">
+        <span class="sr-only">Page</span>
+        <input id="page-num" type="number" min="1" value="1" inputmode="numeric" />
+        <span id="page-total">/ 0</span>
+      </label>
+      <span class="divider" aria-hidden="true"></span>
+      <button class="btn icon" id="zoom-out" aria-label="Zoom out">−</button>
+      <button class="btn zoom" id="zoom-label" title="Fit width">100%</button>
+      <button class="btn icon" id="zoom-in" aria-label="Zoom in">+</button>
+    </div>
+    <div class="group search">
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="search" type="search" placeholder="Search (Ctrl+F)" aria-label="Search document" />
+      <span id="search-count" aria-live="polite"></span>
+    </div>
+    <button class="btn more-button" popovertarget="more-menu" aria-haspopup="menu"><svg class="i"><use href="#i-tools"/></svg><span>Tools</span></button>
+    <div id="more-menu" class="more-menu" popover>
+      <p class="menu-heading">File</p>
+      <button class="menu-item" id="print"><svg class="i"><use href="#i-print"/></svg><span><b>Print</b><small>Ctrl+P</small></span></button>
+      <button class="menu-item" id="combine"><svg class="i"><use href="#i-combine"/></svg><span><b>Combine files</b><small>Add other PDFs, Word files or pictures to the end</small></span></button>
+      <button class="menu-item" id="compare"><svg class="i"><use href="#i-compare"/></svg><span><b>Compare</b><small>See what changed since an earlier version</small></span></button>
+      <p class="menu-heading">Convert &amp; improve</p>
+      <button class="menu-item" id="ocr"><svg class="i"><use href="#i-ocr"/></svg><span><b>Recognize text</b><small>Make scanned pages searchable</small></span></button>
+      <button class="menu-item" id="compress"><svg class="i"><use href="#i-compress"/></svg><span><b>Compress</b><small>Make the file smaller</small></span></button>
+      <button class="menu-item" id="pdfa"><svg class="i"><use href="#i-archive"/></svg><span><b>PDF/A</b><small>Archival copy: fonts and colours built in</small></span></button>
+      <button class="menu-item" id="to-word"><svg class="i"><use href="#i-word"/></svg><span><b>To Word</b><small>Save as an editable .docx</small></span></button>
+    </div>
+  </div>
+
+  <div class="context-bar">
     <div class="group form-bar" id="form-bar" aria-label="Form fields" hidden>
+      <span class="context-label">Add a field:</span>
       <button class="btn" data-field-type="text" aria-pressed="true">Text</button>
       <button class="btn" data-field-type="multiline" aria-pressed="false">Multi-line</button>
       <button class="btn" data-field-type="checkbox" aria-pressed="false">Checkbox</button>
@@ -55,24 +126,6 @@
     <div class="group style-bar" id="style-bar" aria-label="Style" hidden>
       <div class="swatches" role="radiogroup" aria-label="Color"></div>
       <label class="size"><span>Size</span><input type="range" id="style-size" /></label>
-    </div>
-    <div class="group">
-      <button class="btn icon" id="undo" aria-label="Undo" title="Undo (Ctrl+Z)">↶</button>
-      <button class="btn icon" id="redo" aria-label="Redo" title="Redo (Ctrl+Y)">↷</button>
-    </div>
-    <div class="group">
-      <label class="page-nav">
-        <span class="sr-only">Page</span>
-        <input id="page-num" type="number" min="1" value="1" inputmode="numeric" />
-        <span id="page-total">/ 0</span>
-      </label>
-      <button class="btn icon" id="zoom-out" aria-label="Zoom out">−</button>
-      <button class="btn zoom" id="zoom-label" title="Fit width">100%</button>
-      <button class="btn icon" id="zoom-in" aria-label="Zoom in">+</button>
-    </div>
-    <div class="group search">
-      <input id="search" type="search" placeholder="Search (Ctrl+F)" aria-label="Search document" />
-      <span id="search-count" aria-live="polite"></span>
     </div>
   </div>
 

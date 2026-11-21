@@ -7,6 +7,7 @@ import { createRedactor } from "./redact.js";
 import { createTextEditor } from "./textedit.js";
 import { createDefiner } from "./define.js";
 import { createFormDesigner } from "./formdesign.js";
+import { createThemeMenu } from "./theme.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -612,6 +613,16 @@ $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#compress").onclick = compressDocument;
 $("#pdfa").onclick = makePdfA;
+for (const menu of document.querySelectorAll(".more-menu")) { // the Tools and Theme menus
+  menu.addEventListener("beforetoggle", (e) => {
+    if (e.newState !== "open") return;
+    const r = $(`[popovertarget="${menu.id}"]`).getBoundingClientRect(); // under its button, right edges lined up
+    menu.style.top = `${r.bottom + 6}px`;
+    menu.style.right = `${Math.max(8, innerWidth - r.right)}px`;
+  });
+  menu.addEventListener("click", (e) => { if (e.target.closest(".menu-item")) menu.hidePopover(); });
+}
+createThemeMenu($("#theme-menu"));
 $("#to-word").onclick = exportWord;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());

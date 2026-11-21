@@ -106,7 +106,7 @@ export function createViewer(container, { askPassword }) {
   let modified = false; // edits since open or last save
   let restoreView = null;
   eventBus.on("pagesinit", () => {
-    viewer.currentScaleValue = restoreView?.scale ?? "page-width";
+    viewer.currentScaleValue = restoreView?.scale ?? "1"; // every document opens at 100%
     if (restoreView) viewer.currentPageNumber = Math.min(restoreView.page, viewer.pagesCount);
     restoreView = null;
   });
