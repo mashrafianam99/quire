@@ -423,6 +423,20 @@ const compressDocument = () => serial(async () => {
   toast(`Compressed ${kb(result.before)} → ${kb(result.after)} (${saved}% smaller). Save to keep it.`);
 });
 
+const makePdfA = () => serial(async () => {
+  if (!active) return;
+  const tab = active;
+  const { toPdfA } = await import("./pdfa.js"); // MuPDF is large; load only when used
+  const bytes = await viewer.currentBytes(tab.bytes);
+  const result = toPdfA(bytes);
+  if (!result.bytes) { toast(`Quire can't make this a PDF/A: ${result.problems.join("; ")}.`); return; }
+  changeBytes(tab, bytes, result.bytes);
+  await activateNow(tab, { keepView: true });
+  const fonts = result.replacedFonts.length
+    ? ` Fonts that weren't in the file were added (${result.replacedFonts.join(", ")}).` : "";
+  toast(`Made a PDF/A-2b.${fonts} Save to keep it; do this last, as later edits may undo it.`);
+});
+
 const exportWord = () => serial(async () => {
   if (!active) return;
   const tab = active;
@@ -597,6 +611,7 @@ $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
 $("#compress").onclick = compressDocument;
+$("#pdfa").onclick = makePdfA;
 $("#to-word").onclick = exportWord;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
