@@ -30,9 +30,14 @@ access to your disk: it can only write to files you opened or chose in a Save di
 Needs the Android SDK and a JDK 17–21 (Gradle 8 doesn't run on newer Java).
 
 ```sh
-npm run android                      # build, then copy it into android/ (Capacitor)
-cd android && gradlew assembleDebug  # → android/app/build/outputs/apk/debug/app-debug.apk
+npm run android                        # build, then copy it into android/ (Capacitor)
+cd android && gradlew assembleDebug    # → android/app/build/outputs/apk/debug/app-debug.apk
+cd android && gradlew assembleRelease  # → app/build/outputs/apk/release/app-release.apk
 ```
+
+Release builds are signed when `android/keystore.properties` exists (it is never committed):
+`storeFile=…/quire-release.jks`, `storePassword=…`, `keyAlias=…`, `keyPassword=…`.
+Make your own key with `keytool -genkeypair -keystore quire-release.jks -alias quire -keyalg RSA -keysize 4096 -validity 10000`.
 
 On the phone: Save writes into Documents/Quire, Tools → Share sends a copy to another app, and PDFs or
 Word files opened from Files, Gmail or WhatsApp ("Open with Quire", "Share → Quire") open in Quire
