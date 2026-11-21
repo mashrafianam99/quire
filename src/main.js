@@ -141,16 +141,41 @@ const isPdf = (f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
 const isWord = (f) => /\.docx$/i.test(f.name)
   || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-/** PDFs as they are; Word files converted to PDF (marked `converted`, as they aren't saved yet). */
+const isImage = (f) => /^image\/(jpeg|png|webp|gif|bmp)$/.test(f.type) || /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name);
+
+/** JPEG and PNG as they are; WebP, GIF (first frame) and BMP redrawn as PNG by the browser. */
+async function pictureBytes(f) {
+  if (/^image\/(jpeg|png)$/.test(f.type)) return new Uint8Array(await f.arrayBuffer());
+  try {
+    const bitmap = await createImageBitmap(f);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    bitmap.close();
+    return new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
+  } catch {
+    throw new Error(`“${f.name}” couldn't be read as a picture.`);
+  }
+}
+
+/** All pictures picked together, as one PDF with a page each, named after the first. */
+async function picturesToPdf(pictures) {
+  const { imagesToPdf } = await import("./image-to-pdf.js");
+  const bytes = await imagesToPdf(await Promise.all(pictures.map(pictureBytes)));
+  return { name: pictures[0].name.replace(/\.[^.]+$/, ".pdf"), bytes, converted: true };
+}
+
+/** PDFs as they are; Word files and pictures converted to PDF (marked `converted`, as they aren't saved yet). */
 async function readFiles(fileList) {
-  const usable = [...fileList].filter((f) => isPdf(f) || isWord(f));
-  if (usable.length < fileList.length) toast("Only PDF and Word (.docx) files can be opened.");
-  const read = await Promise.allSettled(usable.map(async (f) => {
+  const all = [...fileList];
+  const usable = all.filter((f) => isPdf(f) || isWord(f));
+  const pictures = all.filter(isImage);
+  if (usable.length + pictures.length < all.length) toast("Only PDF, Word (.docx) and picture files can be opened.");
+  const read = await Promise.allSettled([...usable.map(async (f) => {
     const bytes = new Uint8Array(await f.arrayBuffer());
     if (isPdf(f)) return { name: f.name, bytes };
     const { docxToPdf } = await import("./convert.js"); // MuPDF is large; load only when used
     return { name: f.name.replace(/\.docx$/i, ".pdf"), bytes: await docxToPdf(bytes), converted: true };
-  }));
+  }), ...(pictures.length ? [picturesToPdf(pictures)] : [])]);
   for (const r of read) if (r.status === "rejected") toast(r.reason.message);
   return read.filter((r) => r.status === "fulfilled").map((r) => r.value);
 }

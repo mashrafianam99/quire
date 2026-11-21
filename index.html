@@ -75,17 +75,17 @@
         <div class="welcome-icon" aria-hidden="true"></div>
         <h1>Open a PDF to get started</h1>
         <p>Drop files anywhere, or choose them from your computer.<br />Everything stays on your device.</p>
-        <button class="btn primary large" data-open>Choose PDF or Word files</button>
+        <button class="btn primary large" data-open>Choose PDF, Word or picture files</button>
       </div>
     </section>
   </main>
 
-  <div class="drop-overlay" aria-hidden="true"><span>Drop PDF or Word files to open</span></div>
+  <div class="drop-overlay" aria-hidden="true"><span>Drop PDF, Word or picture files to open</span></div>
   <div id="toast" class="toast" role="status" hidden></div>
 </div>
 
-<input id="open-input" type="file" accept="application/pdf,.pdf,.docx" multiple hidden />
-<input id="combine-input" type="file" accept="application/pdf,.pdf,.docx" multiple hidden />
+<input id="open-input" type="file" accept="application/pdf,.pdf,.docx,image/jpeg,image/png,image/webp,image/gif,image/bmp" multiple hidden />
+<input id="combine-input" type="file" accept="application/pdf,.pdf,.docx,image/jpeg,image/png,image/webp,image/gif,image/bmp" multiple hidden />
 <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
 
 <dialog id="sign-dialog" class="q-dialog sign-dialog">
