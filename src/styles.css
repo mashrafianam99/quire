@@ -308,3 +308,43 @@ button, input { font: inherit; color: inherit; }
 .compare-choices label { display: flex; align-items: center; gap: 8px; color: var(--text); overflow-wrap: anywhere; }
 .compare-choices input { width: auto; padding: 0; }
 .dialog-hint { margin: 0 0 10px; color: var(--muted); }
+
+/* form designer: fields are outlined; the PDF's own widgets don't take clicks while designing */
+.viewer.form-designing .annotationLayer { pointer-events: none; }
+.viewer.form-designing .page { cursor: crosshair; }
+.form-box {
+  position: absolute; z-index: 9; box-sizing: border-box; cursor: move;
+  border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.form-box.selected { border-style: solid; border-width: 2px; background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.form-box.drawing { cursor: crosshair; }
+.form-box-label {
+  position: absolute; left: 0; bottom: 100%; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 4px; border-radius: 3px 3px 0 0; background: var(--accent); color: var(--accent-ink);
+  font: 11px/16px system-ui, sans-serif; white-space: nowrap; pointer-events: none;
+}
+.form-resize {
+  position: absolute; right: -5px; bottom: -5px; width: 10px; height: 10px; box-sizing: border-box;
+  border: 2px solid var(--accent); border-radius: 2px; background: var(--surface); cursor: nwse-resize;
+}
+.form-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; width: 300px; box-sizing: border-box;
+  overflow: auto; padding: 14px 16px; display: grid; align-content: start; gap: 12px;
+  background: var(--surface); color: var(--text); border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgb(0 0 0 / 0.06); font: 14px/1.4 system-ui, sans-serif;
+}
+.form-panel[hidden] { display: none; }
+.form-panel h2 { margin: 0; font-size: 16px; }
+.workspace.form-panel-open .viewer { right: 300px; }
+.form-prop { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+.form-prop:has(input[type="checkbox"]) { grid-template-columns: auto 1fr; align-items: center; }
+.form-prop:has(input[type="checkbox"]) span { order: 2; color: var(--text); }
+.form-prop input[type="text"], .form-prop input[type="number"], .form-prop textarea {
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; background: var(--surface-2); color: var(--text); font: inherit;
+}
+.form-hint { margin: 0; color: var(--muted); font-size: 13px; }
+.form-actions { display: flex; gap: 8px; justify-content: space-between; }
+@media (max-width: 760px) {
+  .form-panel { top: auto; left: 0; width: auto; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
+  .workspace.form-panel-open .viewer { right: 0; bottom: 45%; }
+}

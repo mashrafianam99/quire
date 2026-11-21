@@ -35,6 +35,16 @@
       <button class="btn" id="sign" title="Add your signature">Sign</button>
       <button class="btn" id="edit-text" aria-pressed="false" title="Click a line of text to change it">Edit text</button>
       <button class="btn" id="redact" aria-pressed="false" title="Permanently remove text and images">Redact</button>
+      <button class="btn" id="form-design" aria-pressed="false" title="Add, move and change fillable form fields">Form</button>
+    </div>
+    <div class="group form-bar" id="form-bar" aria-label="Form fields" hidden>
+      <button class="btn" data-field-type="text" aria-pressed="true">Text</button>
+      <button class="btn" data-field-type="multiline" aria-pressed="false">Multi-line</button>
+      <button class="btn" data-field-type="checkbox" aria-pressed="false">Checkbox</button>
+      <button class="btn" data-field-type="radio" aria-pressed="false">Radio</button>
+      <button class="btn" data-field-type="dropdown" aria-pressed="false">Dropdown</button>
+      <button class="btn" data-field-type="list" aria-pressed="false">List</button>
+      <button class="btn primary" id="form-done">Done</button>
     </div>
     <div class="group redact-bar" id="redact-bar" aria-label="Redaction" hidden>
       <span id="redact-hint" aria-live="polite"></span>

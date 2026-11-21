@@ -6,6 +6,7 @@ import { printPdf } from "./print.js";
 import { createRedactor } from "./redact.js";
 import { createTextEditor } from "./textedit.js";
 import { createDefiner } from "./define.js";
+import { createFormDesigner } from "./formdesign.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -95,6 +96,7 @@ async function stashActive() {
 async function activateNow(tab, { keepView = false } = {}) {
   redactor.stop(); // marks and open edits belong to the document being replaced
   textEditor.stop();
+  if (active !== tab) formDesigner.stop(); // the designer stays on while its own changes reopen the file
   if (active && active !== tab) await stashActive();
   active = tab;
   renderTabs();
@@ -322,6 +324,7 @@ function chooseComparison() {
 function setTool(mode) {
   redactor.stop();
   textEditor.stop();
+  formDesigner.stop();
   viewer.setTool(mode);
   markTool(mode);
 }
@@ -501,12 +504,48 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
 });
 
 // Double-click a word while reading (Select tool, no edit mode) to look it up offline.
-createDefiner($("#viewer"), $(".workspace"), () => currentTool === Tool.SELECT && !redactor.active && !textEditor.active,
+createDefiner($("#viewer"), $(".workspace"), () => currentTool === Tool.SELECT && !redactor.active && !textEditor.active && !formDesigner.active,
   () => { if (viewer.fitsWidth) viewer.fitWidth(); }); // the page re-fits when the panel narrows the view
+
+// ---------- form designer ----------
+const loadForms = () => import("./forms.js"); // pdf-lib's form code is only needed while designing
+
+/** Runs a form change on the open document as one undoable step; resolves to `op`'s extra result. */
+const editForm = (op) => serial(async () => {
+  const tab = active;
+  const before = await viewer.currentBytes(tab.bytes);
+  const [after, result] = await op(await loadForms(), before);
+  changeBytes(tab, before, after);
+  await activateNow(tab, { keepView: true });
+  return result;
+});
+
+function syncFormBar() {
+  $("#form-design").setAttribute("aria-pressed", String(formDesigner.active));
+  $("#form-bar").hidden = !formDesigner.active;
+  for (const b of document.querySelectorAll("[data-field-type]")) b.setAttribute("aria-pressed", String(b.dataset.fieldType === formDesigner.type));
+  syncSelectButton();
+}
+
+const formDesigner = createFormDesigner(viewer, $("#viewer"), $(".workspace"), {
+  list: async () => (active ? (await loadForms()).listFields(await viewer.currentBytes(active.bytes)) : []),
+  add: (spec) => editForm(async (f, b) => { const r = await f.addField(b, spec); return [r.bytes, r.name]; }),
+  update: (name, changes) => editForm(async (f, b) => [await f.updateField(b, name, changes)]),
+  remove: (name) => editForm(async (f, b) => [await f.removeField(b, name)]),
+  onChange: syncFormBar,
+  onResize: () => { if (viewer.fitsWidth) viewer.fitWidth(); }, // the page re-fits beside the panel
+});
+
+function startFormDesign() {
+  if (!active) return;
+  setTool(Tool.SELECT);
+  formDesigner.start();
+  toast("Drag on the page to add the chosen field (or just click). Click a field to change it, drag it to move it, drag its corner to resize. Delete removes it.");
+}
 
 // Redact and Edit text are modes of their own, so Select shouldn't look pressed during them.
 function syncSelectButton() {
-  if (redactor.active || textEditor.active) $('[data-tool="SELECT"]').setAttribute("aria-pressed", "false");
+  if (redactor.active || textEditor.active || formDesigner.active) $('[data-tool="SELECT"]').setAttribute("aria-pressed", "false");
 }
 
 function startTextEditing() {
@@ -561,6 +600,9 @@ $("#compress").onclick = compressDocument;
 $("#to-word").onclick = exportWord;
 $("#sign").onclick = signDocument;
 $("#redact").onclick = () => (redactor.active ? redactor.stop() : startRedacting());
+$("#form-design").onclick = () => (formDesigner.active ? formDesigner.stop() : startFormDesign());
+$("#form-done").onclick = () => formDesigner.stop();
+for (const b of document.querySelectorAll("[data-field-type]")) b.onclick = () => formDesigner.setType(b.dataset.fieldType);
 $("#edit-text").onclick = () => (textEditor.active ? textEditor.stop() : startTextEditing());
 $("#redact-apply").onclick = applyRedaction;
 $("#redact-cancel").onclick = () => redactor.stop();
