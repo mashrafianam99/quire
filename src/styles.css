@@ -259,3 +259,45 @@ button, input { font: inherit; color: inherit; }
 .text-edit-bar input[type="color"] {
   width: 28px; height: 28px; padding: 2px; border: 0; background: transparent; cursor: pointer;
 }
+
+/* the dictionary panel: opens at the side on a double-clicked word; the page narrows to make room */
+.define-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; width: 340px; box-sizing: border-box;
+  display: flex; flex-direction: column; background: var(--surface); color: var(--text);
+  border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgb(0 0 0 / 0.06);
+  font: 14px/1.45 system-ui, sans-serif;
+}
+.define-panel[hidden] { display: none; }
+.workspace.defining .viewer { right: 340px; }
+.define-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 10px 8px 16px; border-bottom: 1px solid var(--border);
+}
+.define-head h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.define-body { flex: 1; overflow: auto; padding: 4px 16px 16px; }
+.define-close {
+  flex: none; width: 32px; height: 32px; border: 0; border-radius: 4px; background: transparent; color: inherit;
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.define-close:hover, .define-more:hover, .define-link:hover { background: var(--accent-soft); }
+.define-close:focus-visible, .define-more:focus-visible, .define-link:focus-visible { outline: 2px solid var(--accent); }
+.define-lemma { margin: 14px 0 0; font-size: 15px; }
+.define-pos { margin: 10px 0 2px; font-size: 12px; font-style: italic; font-weight: 600; color: var(--muted); }
+.define-senses { margin: 0; padding-left: 20px; }
+.define-senses li { margin: 2px 0 8px; }
+.define-example { display: block; color: var(--muted); font-style: italic; }
+.define-synonyms, .define-suggest { display: block; color: var(--muted); font-size: 13px; }
+.define-link {
+  padding: 0 2px; border: 0; border-radius: 3px; background: transparent; color: var(--accent);
+  font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.define-none { margin: 10px 0 0; color: var(--muted); }
+.define-more {
+  margin-top: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--accent); font: inherit; cursor: pointer;
+}
+/* phones: the panel is a sheet along the bottom instead */
+@media (max-width: 760px) {
+  .define-panel { top: auto; left: 0; width: auto; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
+  .workspace.defining .viewer { right: 0; bottom: 45%; }
+}

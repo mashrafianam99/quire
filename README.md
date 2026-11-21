@@ -30,6 +30,7 @@ npm run build    # static build in dist/
 - PDF → Word (To Word): an editable .docx with paragraphs, headings, bold/italic/colours, bullets, real Word tables (grid and row-striped, merged cells, borders, shading), pictures, diagrams as pictures, cover artwork behind the text, page size/margins, and the running header/footer with live page numbers
 - Compress: drops unused/duplicate objects and recompresses streams; images over 2000 px are reduced (photos as JPEG, others stay lossless). Undoable; never makes the file bigger
 - Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one); Ctrl+U or the style bar above the box underlines, and its colour picker recolours the selected words. When a paragraph grows, the content below it in its column moves down to make room (other columns stay put); when it shrinks, that content moves back up to close the gap. A callout box or accent bar around the paragraph grows and shrinks with it, and whatever no longer fits on the page continues on a new page inserted after it
+- Dictionary: double-click any word while reading and a panel at the side (the page narrows, so it never covers the text) shows its meanings by part of speech, synonyms and examples, from WordNet 3.1 packed into the app, so nothing is looked up online. The whole dictionary is stored on the device in the background the first time Quire opens (about 13 MB), so it keeps working with no network or server. It also knows small words (the, of, is), irregular forms (went → go), contractions, ligatures (ﬁ), joined words (find_max, getInstance), compounds (checkbox) and common abbreviations; synonyms are links, and close spellings are offered when nothing matches
 - Redact: drag boxes, Apply — the text, images and drawings under them are permanently deleted from the file (MuPDF)
 - Zoom with Ctrl+wheel or touchpad pinch
 - Save keeps annotations and form input (Ctrl+S); warns before closing with unsaved changes
@@ -47,6 +48,7 @@ npm run build    # static build in dist/
 | `src/docx.js`, `src/convert.js` | Word (.docx) → XHTML (own zip + XML reader, no dependencies); MuPDF lays it out, pdf-lib stamps header/footer — unit-tested |
 | `src/pdf-layout.js`, `src/pdf-to-docx.js` | PDF → Word: MuPDF reads lines, pictures and drawings (tables rebuilt from cell borders/shading, diagrams pictured); docx writes the Word file — unit-tested |
 | `src/image-to-pdf.js` | Pictures → PDF: one page per picture, EXIF orientation honoured; HEIC via libheif, SVG via the browser — unit-tested |
+| `src/dictionary.js`, `src/define.js`, `scripts/build-dictionary.mjs` | Offline dictionary: WordNet packed into per-letter JSON at build time; lookup with base forms; the card on a double-clicked word — unit-tested |
 | `src/textedit.js`, `src/textedit-pdf.js` | In-place line editor; MuPDF line lookup/removal + pdf-lib rewrite — unit-tested |
 | `src/main.js` | Tabs, files, toolbar and keyboard wiring |
 
@@ -60,6 +62,7 @@ npm run build    # static build in dist/
 | [tesseract.js](https://github.com/naptha/tesseract.js) | Apache-2.0 | OCR |
 | [docx](https://github.com/dolanmiu/docx) | MIT | Writing Word files (PDF → Word) |
 | [libheif-js](https://github.com/catdad-experiments/libheif-js) | LGPL-3.0 | Decoding HEIC (iPhone) photos, loaded only when one is opened |
+| [WordNet 3.1](https://wordnet.princeton.edu/) via [wordnet-db](https://github.com/moos/wordnet-db) | WordNet licence (permissive) / MIT | The offline dictionary (build time only; the licence ships beside the data) |
 
 ## Roadmap
 

@@ -5,6 +5,7 @@ import { askForSignature } from "./signature.js";
 import { printPdf } from "./print.js";
 import { createRedactor } from "./redact.js";
 import { createTextEditor } from "./textedit.js";
+import { createDefiner } from "./define.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -282,7 +283,9 @@ function setTool(mode) {
   viewer.setTool(mode);
   markTool(mode);
 }
+let currentTool = Tool.SELECT;
 function markTool(mode) {
+  currentTool = mode;
   for (const b of document.querySelectorAll("[data-tool]")) {
     b.setAttribute("aria-pressed", String(Tool[b.dataset.tool] === mode));
   }
@@ -454,6 +457,10 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
   }),
   onChange: () => { $("#edit-text").setAttribute("aria-pressed", String(textEditor.active)); syncSelectButton(); },
 });
+
+// Double-click a word while reading (Select tool, no edit mode) to look it up offline.
+createDefiner($("#viewer"), $(".workspace"), () => currentTool === Tool.SELECT && !redactor.active && !textEditor.active,
+  () => { if (viewer.fitsWidth) viewer.fitWidth(); }); // the page re-fits when the panel narrows the view
 
 // Redact and Edit text are modes of their own, so Select shouldn't look pressed during them.
 function syncSelectButton() {

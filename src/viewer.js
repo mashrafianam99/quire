@@ -190,6 +190,8 @@ export function createViewer(container, { askPassword }) {
     /** Zoom by a factor, keeping the point under `origin` (client x,y) in place. */
     zoomBy: (scaleFactor, origin) => viewer.updateScale({ scaleFactor, origin, drawingDelay: 400 }),
     fitWidth: () => { viewer.currentScaleValue = "page-width"; },
+    /** Whether the zoom follows the width of the view (so it should re-fit when the view narrows). */
+    get fitsWidth() { return viewer.currentScaleValue === "page-width"; },
     goToPage: (n) => { viewer.currentPageNumber = n; },
     get pageCount() { return viewer.pagesCount; },
     /** pdf.js's view of page `n` (1-based): its `div` and current `viewport`. */

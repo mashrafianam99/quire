@@ -2,3 +2,4 @@ node_modules/
 dist/
 public/pdfjs/
 .playwright-mcp/
+public/dictionary/

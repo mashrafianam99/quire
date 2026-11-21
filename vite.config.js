@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
-import { cpSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readdirSync } from "node:fs";
+import { writeDictionary } from "./scripts/build-dictionary.mjs";
 
 // pdf.js fetches CMaps, standard fonts, ICC profiles and WASM decoders by URL at runtime.
 for (const dir of ["cmaps", "standard_fonts", "wasm", "iccs"]) {
@@ -15,6 +16,9 @@ for (const file of readdirSync("node_modules/tesseract.js-core")) {
 }
 cpSync("node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz",
   "public/tesseract/lang/eng.traineddata.gz");
+
+// The dictionary works offline too: WordNet packed into per-letter files (a few seconds, once).
+if (!existsSync("public/dictionary/a.json")) writeDictionary("public/dictionary");
 
 export default defineConfig({
   base: "./", // relative paths so the same build works inside the Tauri shell later
