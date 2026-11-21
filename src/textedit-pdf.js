@@ -68,6 +68,62 @@ function readPage(page) {
   return { lines: mergeBaselines(raw), images };
 }
 
+/** The page-space bounds of everything drawn (fills and strokes), cut to where it shows through its clips. */
+function readDrawings(page) {
+  const drawings = [];
+  const clips = [page.getBounds()];
+  const cut = ([a, b, c, d]) => {
+    const [x0, y0, x1, y1] = clips.at(-1);
+    const r = [Math.max(a, x0), Math.max(b, y0), Math.min(c, x1), Math.min(d, y1)];
+    return r[0] < r[2] && r[1] < r[3] ? r : null;
+  };
+  const add = (r) => { const shown = cut(r); if (shown) drawings.push(shown); };
+  const pushClip = (r) => clips.push(r ? (cut(r) ?? [0, 0, 0, 0]) : clips.at(-1));
+  const device = new mupdf.Device({
+    fillPath(path, evenOdd, ctm, cs, color, alpha) { if (alpha > 0.1) add(path.getBounds(null, ctm)); },
+    strokePath(path, stroke, ctm, cs, color, alpha) { if (alpha > 0.1) add(path.getBounds(stroke, ctm)); },
+    clipPath(path, evenOdd, ctm) { pushClip(path.getBounds(null, ctm)); },
+    clipStrokePath(path, stroke, ctm) { pushClip(path.getBounds(stroke, ctm)); },
+    clipText() { pushClip(null); },
+    clipStrokeText() { pushClip(null); },
+    clipImageMask() { pushClip(null); },
+    endMask() { pushClip(null); },
+    popClip() { if (clips.length > 1) clips.pop(); },
+  });
+  try {
+    page.run(device, Matrix.identity);
+  } finally {
+    device.close();
+  }
+  return drawings;
+}
+
+const DECORATION_SIDE = 2;    // a bar or box edge this many font sizes beside the paragraph belongs to it
+const DECORATION_SHARE = 0.5; // a drawing over half the page is a background, not a decoration
+const STRETCH = 1;            // pt; the slice of a decoration stretched to fill the space a paragraph grows by...
+const SLICE_MARGIN = 1;       // ...which drawings must cross with this much to spare above and below
+
+/**
+ * The drawings around a paragraph that should grow or shrink with it (a callout's box and accent
+ * bar, a table cell's sides): they start at or above its top and reach below its bottom, beside or
+ * behind it. Their union in page space, or null.
+ */
+function decorationsAround(drawings, para, [px0, py0, px1, py1]) {
+  const size = para[0].size;
+  const [top, bottom] = [Math.min(...para.map((l) => l.bbox[1])), Math.max(...para.map((l) => l.bbox[3]))];
+  const [left, right] = [Math.min(...para.map((l) => l.bbox[0])), Math.max(...para.map((l) => l.bbox[2]))];
+  const pageArea = (px1 - px0) * (py1 - py0);
+  const around = drawings.filter(([a, b, c, d]) => b <= top + size && d > bottom + 0.5
+    && c > left - size * DECORATION_SIDE && a < right + size * DECORATION_SIDE
+    && (c - a) * (d - b) < pageArea * DECORATION_SHARE);
+  if (!around.length) return null;
+  return {
+    rect: [Math.min(...around.map((r) => r[0])), Math.min(...around.map((r) => r[1])),
+      Math.max(...around.map((r) => r[2])), Math.max(...around.map((r) => r[3]))],
+    innerBottom: Math.min(...around.map((r) => r[3])), // the cut must stay inside all of them
+  };
+}
+
 const styleKey = (ch) => `${ch.font.rawName}|${ch.size.toFixed(1)}|${ch.color.join()}`;
 
 /** The style most of a line's letters have (a line starting with a bold word is still body text). */
@@ -264,7 +320,7 @@ function footerTop(lines, [, py0, , py1]) {
  * running footer (or the page's bottom), as wide as the gap to any column beside it. Null when
  * nothing is below. `bottom` is the lowest text or image in it; `limit` is how low it may go.
  */
-function blockBelow(lines, images, para, bounds) {
+function blockBelow(lines, images, drawings, para, bounds, withDecorations = true) {
   const [px0, py0, px1, py1] = bounds;
   const top = para.at(-1).bbox[3];
   const footer = footerTop(lines, bounds);
@@ -284,15 +340,21 @@ function blockBelow(lines, images, para, bounds) {
       if (a < x1 && c > x1) { x1 = Math.min(px1, c + 1); widened = true; }
     }
   }
-  // shortcut: vector drawings aren't measured, so one near the page bottom may be pushed past it
-  const content = [...under.map((l) => l.bbox), ...images]
-    .filter(([a, b, c]) => b >= top && b < floor && a < x1 && c > x0);
+  // a box or bar around the paragraph grows with it, if the block holds it whole across
+  const found = withDecorations ? decorationsAround(drawings, para, bounds) : null;
+  const deco = found && found.rect[0] >= x0 - 1 && found.rect[2] <= x1 + 1 && found.rect[3] <= floor ? found : null;
+  // shortcut: other vector drawings aren't measured for the off-page check (they are for splitting it)
+  // (the box around the paragraph starts above it; everything else counts only if it starts below)
+  const content = [...under.map((l) => l.bbox), ...images, ...(deco ? [deco.rect] : [])]
+    .filter((r) => (r[1] >= top || r === deco?.rect) && r[1] < floor && r[0] < x1 && r[2] > x0);
   if (!content.length) return null;
   // cut mid-gap, not along the text's edge: decorations reaching just past the paragraph (an accent
-  // bar, an underline) stay whole above the cut instead of a sliver of them moving down
+  // bar, an underline) stay whole above the cut instead of a sliver of them moving down; a box
+  // around it is cut inside, so its bottom moves with what's below
   // ...but above any line beside the paragraph that reaches across it, so that line moves whole
   // (repeat: raising the cut can make it cross another line)
-  let cut = (top + Math.min(...content.map((b) => b[1]))) / 2;
+  const nextTop = Math.min(...content.map((b) => (b === deco?.rect ? Infinity : b[1])));
+  let cut = Math.min((top + nextTop) / 2, deco ? (top + deco.innerBottom) / 2 : Infinity);
   for (let raised = true; raised;) {
     raised = false;
     for (const l of lines) {
@@ -303,6 +365,13 @@ function blockBelow(lines, images, para, bounds) {
       }
     }
   }
+  // the slice that gets stretched must be plain: everything crossing it runs straight through (a
+  // box's sides, a bar, a fill), not a divider or an arrowhead that starts or ends there
+  const [sx0, , sx1] = deco?.rect ?? [];
+  const plain = deco && drawings.every(([a, b, c, d]) => !(a < sx1 && c > sx0 && b < cut && d > cut - STRETCH)
+    || (b < cut - STRETCH - SLICE_MARGIN && d > cut + SLICE_MARGIN));
+  // not plain: the decoration isn't used, so neither is the cut it moved (the block is as without it)
+  if (deco && !plain) return blockBelow(lines, images, drawings, para, bounds, false);
   // how high the block may rise when the paragraph shrinks: not into anything above the cut
   // that isn't the paragraph (a figure or a column beside it)
   const above = [...lines.filter((l) => !para.includes(l)).map((l) => l.bbox), ...images]
@@ -312,7 +381,40 @@ function blockBelow(lines, images, para, bounds) {
     bottom: Math.max(...content.map((b) => b[3])),
     limit: floor === py1 ? py1 : floor - para.at(-1).size, // keep a line's space above the footer
     ceiling: Math.max(py0, ...above.map((b) => b[3])),
+    deco: deco?.rect ?? null, // page space; its part above the cut is redrawn, a slice of it stretched
+    // what's in the block, [top, bottom] each, so it can be split between two pages at a gap
+    items: [...content, ...drawings.filter(([a, b, c, d]) => b >= cut && d <= floor && a < x1 && c > x0)]
+      .filter(([, b]) => b >= cut).map(([, b, , d]) => [b, d]),
   };
+}
+
+/** Where the page's content starts: the top of its highest text or picture (page space). */
+function contentTop(lines, images, [, py0]) {
+  const tops = [...lines.map((l) => l.bbox[1]), ...images.map((b) => b[1])];
+  return tops.length ? Math.min(...tops) : py0;
+}
+
+const DESCENT = 0.25; // a line's letters reach about this many font sizes below its baseline
+
+/**
+ * How an edit that no longer fits is split with a new page (page space): the first `keep` new lines
+ * stay; the block below is split at `split` (its part above moves down by `grownBy` on this page,
+ * the rest goes to the new page; null when there's no block). Null when nothing has to move over.
+ */
+function flowPlan({ layout, size }, count, grownBy) {
+  const { firstPage, leading, limit, below } = layout;
+  let keep = 0;
+  while (keep < count && firstPage[1] + keep * leading + size * DESCENT <= limit) keep++;
+  if (keep < count) return { keep, split: below ? below.rect[1] : null }; // the block follows the paragraph over
+  if (!below) return null;
+  // the lowest gap above which everything still fits once moved down
+  let split = below.rect[1];
+  for (const [t] of below.items) {
+    const above = below.items.filter(([b]) => b < t);
+    if (above.some(([, d]) => d > t) || above.some(([, d]) => d + grownBy > limit)) continue;
+    split = Math.max(split, (t + Math.max(below.rect[1], ...above.map(([, d]) => d))) / 2);
+  }
+  return { keep, split };
 }
 
 // ---------- public: find ----------
@@ -357,6 +459,8 @@ export function findParagraph(bytes, pageIndex, point) {
     const bottom = Math.max(...para.map((l) => l.bbox[3]));
     const editRight = Number.isFinite(right) ? right : Math.max(...para.map((l) => l.bbox[2]));
     const [ux, uy] = [toUser[0] * dx + toUser[2] * dy, toUser[1] * dx + toUser[3] * dy];
+    const below = first.horizontal ? blockBelow(lines, images, readDrawings(page), para, bounds) : null;
+    const footer = footerTop(lines, bounds);
 
     return {
       pageIndex,
@@ -372,7 +476,12 @@ export function findParagraph(bytes, pageIndex, point) {
         firstPage: first.chars[0].origin, // first baseline start, page space
         firstLeft: first.left, bodyLeft, right, leading, dir: clicked.dir,
         spaceBelow: spaceBelow(lines, para, bounds),
-        below: first.horizontal ? blockBelow(lines, images, para, bounds) : null,
+        below,
+        // for flowing onto a new page: how low text may go, where a page's content starts, and how
+        // far the first baseline sits below the paragraph's top
+        limit: below?.limit ?? (footer !== null && footer > bottom ? footer - first.size : bounds[3]),
+        contentTop: contentTop(lines, images, bounds),
+        ascent: first.chars[0].origin[1] - first.bbox[1],
       },
       toUser,
       angle: (Math.atan2(uy, ux) * 180) / Math.PI,
@@ -612,31 +721,41 @@ function pdfColor(c) {
 // ---------- public: replace ----------
 
 // Remove text, image pixels, and drawings the rects fully cover.
-function redact(pdf, pageIndex, rects) {
-  const page = pdf.loadPage(pageIndex);
-  for (const r of rects) if (r[2] > r[0] && r[3] > r[1]) page.createAnnotation("Redact").setRect(r);
-  page.applyRedactions(false, PDFPage.REDACT_IMAGE_PIXELS, PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
-    PDFPage.REDACT_TEXT_REMOVE);
-  return pdf.saveToBuffer("garbage=compact").asUint8Array().slice();
+// Remove the drawings the rects fully cover, and (unless lineArtOnly) text and image pixels too.
+function redact(bytes, pageIndex, rects, { lineArtOnly = false } = {}) {
+  const pdf = openPdf(bytes);
+  try {
+    const page = pdf.loadPage(pageIndex);
+    for (const r of rects) if (r[2] > r[0] && r[3] > r[1]) page.createAnnotation("Redact").setRect(r);
+    page.applyRedactions(false, lineArtOnly ? PDFPage.REDACT_IMAGE_NONE : PDFPage.REDACT_IMAGE_PIXELS,
+      PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED, lineArtOnly ? PDFPage.REDACT_TEXT_NONE : PDFPage.REDACT_TEXT_REMOVE);
+    return pdf.saveToBuffer("garbage=compact").asUint8Array().slice();
+  } finally {
+    pdf.destroy();
+  }
 }
 
-/** Split a page in two: `kept` without the block `rect`, `block` with only what's inside it. */
-function splitBlock(bytes, pageIndex, rect) {
-  const [x0, y0, x1, y1] = rect;
-  const kept = openPdf(bytes);
-  const block = openPdf(bytes);
-  try {
-    const [px0, py0, px1, py1] = block.loadPage(pageIndex).getBounds();
-    return {
-      kept: redact(kept, pageIndex, [rect]),
-      // everything outside the block, so its clipped-away parts (e.g. the footer) aren't copied as hidden text
-      block: redact(block, pageIndex,
-        [[px0, py0, px1, y0], [px0, y0, x0, py1], [x1, y0, px1, py1], [x0, y1, x1, py1]]),
-    };
-  } finally {
-    kept.destroy();
-    block.destroy();
-  }
+/** The page with only what's inside `rect` (so clipped-away parts, e.g. the footer, aren't copied as hidden text). */
+function onlyInside(bytes, pageIndex, [x0, y0, x1, y1]) {
+  const pdf = openPdf(bytes);
+  let bounds;
+  try { bounds = pdf.loadPage(pageIndex).getBounds(); } finally { pdf.destroy(); }
+  const [px0, py0, px1, py1] = bounds;
+  return redact(bytes, pageIndex, [[px0, py0, px1, y0], [px0, y0, x0, py1], [x1, y0, px1, py1], [x0, y1, x1, py1]]);
+}
+
+/**
+ * Split a page: `kept` without the block `rect`, `block` with only what's inside it. With a
+ * decoration `deco` around the paragraph, its part above the cut becomes `top` and leaves `kept`,
+ * along with the decoration's drawings, so the box can be drawn again taller or shorter.
+ */
+function splitBlock(bytes, pageIndex, rect, deco) {
+  let kept = redact(bytes, pageIndex, [rect]);
+  const block = onlyInside(bytes, pageIndex, rect);
+  if (!deco) return { kept, block };
+  const topRect = [deco[0], deco[1], deco[2], rect[1]];
+  kept = redact(redact(kept, pageIndex, [topRect]), pageIndex, [deco], { lineArtOnly: true });
+  return { kept, block, top: onlyInside(bytes, pageIndex, topRect), topRect };
 }
 
 /**
@@ -644,11 +763,14 @@ function splitBlock(bytes, pageIndex, rect) {
  * text (written in the paragraph's main style), or runs [{text, style?, bold?, italic?}] where
  * `style` indexes para.styles and bold/italic override it. When it grows, what's below it in its column moves down by the added lines (`pushed`, in
  * points); when it shrinks, it moves up by the removed lines (`pulled`), but never into
- * anything beside the paragraph. If growing would push content off the page and the text doesn't fit the gap below,
+ * anything beside the paragraph. If growing would push content off the page, what no longer fits
+ * (the last lines of the content below, or of the paragraph itself) continues on a new page inserted
+ * after this one. Where that can't be done (inside a box, a turned page) and the text doesn't fit the gap below,
  * it isn't written while allowOverflow is false: bytes is null and overflowLines says how
  * many lines too many it needs.
  * @returns {Promise<{bytes: Uint8Array|null, lines: number, usedOwnFont: boolean,
- *   fallbackChars: string[], overflows: boolean, overflowLines: number, pushed: number, pulled: number}>}
+ *   fallbackChars: string[], overflows: boolean, overflowLines: number, pushed: number, pulled: number,
+ *   newPage: number|null}>} newPage: the index of the page inserted for what no longer fit
  */
 export async function replaceParagraph(bytes, para, content, { allowOverflow = true } = {}) {
   // 1. remove only the old letters; resolve the new text's styles and copy their embedded fonts
@@ -680,7 +802,8 @@ export async function replaceParagraph(bytes, para, content, { allowOverflow = t
   }
 
   // 2. wrap the new text into the paragraph's column, measuring each style in its own font
-  const { firstPage, firstLeft, bodyLeft, right, leading, dir, spaceBelow, below } = para.layout;
+  const { layout } = para;
+  const { firstPage, firstLeft, bodyLeft, right, leading, dir, spaceBelow, below } = layout;
   const layOut = async (source) => {
     const doc = await PDFDocument.load(source);
     const fonts = new Map();
@@ -698,38 +821,79 @@ export async function replaceParagraph(bytes, para, content, { allowOverflow = t
   const pushed = grownBy > 0 && below && below.bottom + grownBy <= below.limit ? grownBy : 0;
   // all or nothing: a part-way pull would leave an odd-sized gap
   const pulled = grownBy < 0 && below && below.rect[1] + grownBy >= below.ceiling ? -grownBy : 0;
-  const overflows = !pushed && grownBy > spaceBelow;
+  const m = para.toUser; // page space (+y down) to user space
+  // shortcut: decorations stretch, and text flows onto a new page, only on unrotated pages
+  const upright = m[1] === 0 && m[2] === 0 && m[3] < 0;
+  // what doesn't fit continues on a new page after this one; a box around it can't be split, though
+  // (only for real growth: something overlapping just below makes spaceBelow negative)
+  const plan = !pushed && grownBy > 0 && grownBy > spaceBelow && upright && !below?.deco
+    ? flowPlan(para, lines.length, grownBy) : null;
+  const overflows = !pushed && !plan && grownBy > spaceBelow;
   const overflowLines = overflows ? Math.ceil((grownBy - spaceBelow) / leading) : 0;
   const summary = {
     lines: lines.length,
     usedOwnFont: [...fonts.values()].every((f) => f.usedOwn),
     fallbackChars: [...new Set([...fonts.values()].flatMap((f) => f.usedFallback))],
-    overflows, overflowLines, pushed, pulled,
+    overflows, overflowLines, pushed: plan ? grownBy : pushed, pulled, newPage: plan ? para.pageIndex + 1 : null,
   };
   if (overflows && !allowOverflow) return { ...summary, bytes: null };
 
   // 3. make room (or close the gap): cut out the block below and draw it again lower (or higher),
   // as real (searchable) content
   // shortcut: links and form fields in the block stay where they were; move annotations too if users hit it
-  const shift = pushed - pulled; // in page space, + is down
+  const shift = plan ? 0 : pushed - pulled; // in page space, + is down
+  const place = async (target, bytesOf, rect, options) => {
+    const [l, b, r, t] = Rect.transform(rect, m);
+    const source = (await PDFDocument.load(bytesOf)).getPage(para.pageIndex);
+    target.drawPage(await doc.embedPage(source, { left: l, bottom: b, right: r, top: t }, [1, 0, 0, 1, 0, 0]), options(t));
+  };
+  const moveBy = (d) => () => ({ x: m[2] * d, y: m[3] * d });
   if (shift) {
-    const { kept, block } = splitBlock(removed, para.pageIndex, below.rect);
+    const { kept, block, top, topRect } = splitBlock(removed, para.pageIndex, below.rect, upright ? below.deco : null);
     ({ doc, fonts } = await layOut(kept));
-    const [l, b, r, t] = Rect.transform(below.rect, para.toUser);
-    const source = (await PDFDocument.load(block)).getPage(para.pageIndex);
-    const form = await doc.embedPage(source, { left: l, bottom: b, right: r, top: t }, [1, 0, 0, 1, 0, 0]);
-    const m = para.toUser; // the move in page space (+y down), expressed in user space
-    doc.getPage(para.pageIndex).drawPage(form, { x: m[2] * shift, y: m[3] * shift });
+    const page = doc.getPage(para.pageIndex);
+    if (top) {
+      // shrinking: the strip the lost lines took is dropped (pull-up checked nothing else is in it)
+      await place(page, top, [topRect[0], topRect[1], topRect[2], topRect[3] + Math.min(0, shift)], moveBy(0));
+      if (shift > 0) { // fill the gap with a thin slice from just above the cut, stretched (its top stays put)
+        const k = (STRETCH + shift) / STRETCH;
+        await place(page, top, [topRect[0], topRect[3] - STRETCH, topRect[2], topRect[3]], (t) => ({ x: 0, y: t * (1 - k), yScale: k }));
+      }
+    }
+    await place(page, block, below.rect, moveBy(shift));
+  }
+  let next = null; // the new page, when the edit flows over
+  if (plan) {
+    const { keep, split } = plan;
+    const block = split === null ? null : splitBlock(removed, para.pageIndex, below.rect);
+    if (block) ({ doc, fonts } = await layOut(block.kept));
+    const { x, y, width, height } = doc.getPage(para.pageIndex).getMediaBox();
+    next = doc.insertPage(para.pageIndex + 1, [width, height]);
+    next.setMediaBox(x, y, width, height); // same box, so page space maps the same way
+    if (block) {
+      const [x0, cut, x1, floor] = below.rect;
+      if (split > cut) await place(doc.getPage(para.pageIndex), block.block, [x0, cut, x1, split], moveBy(grownBy));
+      // the rest starts at the new page's top, or under the paragraph's last lines, spaced as before
+      const tailTop = Math.min(...below.items.map(([t]) => t).filter((t) => t >= split));
+      const lastBaseline = firstPage[1] + (lines.length - 1) * leading;
+      const startsAt = keep < lines.length
+        ? layout.contentTop + layout.ascent + (lines.length - 1 - keep) * leading + (tailTop + grownBy - lastBaseline)
+        : layout.contentTop;
+      await place(next, block.block, [x0, split, x1, floor], moveBy(startsAt - tailTop));
+    }
   }
 
-  // 4. write the new text line by line
-  const page = doc.getPage(para.pageIndex);
+  // 4. write the new text line by line (lines that don't fit go to the top of the new page)
   const [dx, dy] = dir;
   const [nx, ny] = [-dy, dx]; // from one line to the next, in page space
+  const keep = plan?.keep ?? lines.length;
   lines.forEach(([start, end], i) => {
+    const page = i < keep ? doc.getPage(para.pageIndex) : next;
+    const [ox, oy] = i < keep ? firstPage : [firstPage[0], layout.contentTop + layout.ascent];
+    const row = i < keep ? i : i - keep;
     const shift = i === 0 ? 0 : bodyLeft - firstLeft;
-    let x = firstPage[0] + shift * dx + i * leading * nx;
-    let y = firstPage[1] + shift * dy + i * leading * ny;
+    let x = ox + shift * dx + row * leading * nx;
+    let y = oy + shift * dy + row * leading * ny;
     for (const { text: piece, style } of segments(text, styleAt, start, end)) {
       const color = pdfColor(style.color);
       const from = [x, y];

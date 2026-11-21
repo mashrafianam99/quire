@@ -435,7 +435,7 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
     const result = await (await loadTextEdit()).replaceParagraph(para.bytes, para, text, { allowOverflow: force });
     if (!result.bytes) {
       const n = result.overflowLines;
-      toast(`This needs about ${n} more line${n === 1 ? "" : "s"} than there's room for on this page. `
+      toast(`This needs about ${n} more line${n === 1 ? "" : "s"} than there's room for, and it can't continue on a new page here (it's inside a box, or the page is turned). `
         + "Shorten it, or press Enter again to place it anyway (it will overlap the text below).");
       return { overflowLines: n };
     }
@@ -443,6 +443,7 @@ const textEditor = createTextEditor(viewer, $("#viewer"), {
     await activateNow(para.tab, { keepView: true });
     textEditor.start(); // reopening the document ended the mode; stay in it for the next paragraph
     const notes = [];
+    if (result.newPage !== null) notes.push(`It didn't all fit, so the rest continues on a new page ${result.newPage + 1}.`);
     if (result.overflows) notes.push("The paragraph grew and may now overlap the text below it.");
     if (!result.usedOwnFont) notes.push("This document's font couldn't be reused, so a similar standard font was used.");
     else if (result.fallbackChars.length) {

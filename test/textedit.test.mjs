@@ -19,11 +19,11 @@ async function samplePdf({ rotate = 0 } = {}) {
   return doc.save();
 }
 
-/** Every line of page 1 as {text, x (left), y (baseline), right, font}, in PDF user space. */
-function linesOf(bytes) {
+/** Every line of a page (default page 1) as {text, x (left), y (baseline), right, font}, in PDF user space. */
+function linesOf(bytes, pageIndex = 0) {
   const doc = mupdf.Document.openDocument(bytes, "application/pdf");
   try {
-    const page = doc.loadPage(0);
+    const page = doc.loadPage(pageIndex);
     const toUser = mupdf.Matrix.invert(page.getTransform());
     const out = [];
     let cur;
@@ -264,21 +264,90 @@ test("a running footer stays where it is; content is pushed down only as far as 
   assert.ok(lines.some((l) => l.text.trim() === "Last body line." && near(l.y, 70 - grown.pushed, 0.5)));
 
   const tooMuch = await replaceParagraph(bytes, para, `${para.text} ${para.text}`, { allowOverflow: false });
-  assert.equal(tooMuch.bytes, null, "would run into the footer");
+  assert.equal(tooMuch.newPage, 1, "what doesn't fit above the footer continues on a new page");
+  for (const footer of ["Prepared by someone", "Page 1 of 9"]) {
+    assert.ok(linesOf(tooMuch.bytes).some((l) => l.text.trim() === footer && near(l.y, 20, 0.5)), `${footer} stays on page 1`);
+    assert.ok(!linesOf(tooMuch.bytes, 1).some((l) => l.text.trim() === footer), `${footer} isn't copied`);
+  }
 });
 
-test("refuses growth that would push content off the page, unless told to place it anyway", async () => {
+// ---------- flowing onto a new page ----------
+
+/** A page with a heading at the top, a paragraph low down, three short lines under it and a footer. */
+async function nearBottomPdf() {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  const width = (t) => helv.widthOfTextAtSize(t, 12);
+  page.drawText("Heading at the top", { x: 72, y: 740, size: 16, font: helv });
+  const body = wrapText(BODY, () => COLUMN, width);
+  const top = 150 + (body.length - 1) * 15;
+  body.forEach((t, i) => page.drawText(t, { x: 72, y: top - i * 15, size: 12, font: helv }));
+  ["Line A under it.", "Line B under it.", "Line C under it."].forEach((t, i) => page.drawText(t, { x: 72, y: 120 - i * 20, size: 12, font: helv }));
+  page.drawText("Page 1 of 9", { x: 500, y: 20, size: 9, font: helv });
+  return { bytes: await doc.save(), top, width };
+}
+
+const textOf = (bytes, pageIndex) => linesOf(bytes, pageIndex).map((l) => l.text.trim());
+
+test("content pushed past the bottom continues on a new page after this one, in order and once", async () => {
+  const { bytes, top, width } = await nearBottomPdf();
+  const para = findParagraph(bytes, 0, [150, top + 3]);
+  let longer = para.text;
+  while (wrapText(longer, () => COLUMN, width).length < para.lineCount + 4) longer += " More words here."; // B and C no longer fit
+
+  const result = await replaceParagraph(bytes, para, longer, { allowOverflow: false });
+
+  assert.ok(result.bytes, "placed without asking");
+  assert.equal(result.newPage, 1);
+  assert.equal((await PDFDocument.load(result.bytes)).getPageCount(), 2);
+  const [first, second] = [linesOf(result.bytes), linesOf(result.bytes, 1)];
+  const grown = (result.lines - para.lineCount) * 15;
+  assert.ok(first.some((l) => l.text.trim() === "Line A under it." && near(l.y, 120 - grown, 0.5)), "A fits, moved down");
+  const b = second.find((l) => l.text.trim() === "Line B under it.");
+  const c = second.find((l) => l.text.trim() === "Line C under it.");
+  assert.ok(b && c, "B and C continue on the new page");
+  assert.ok(near(b.y - c.y, 20, 0.5), "keeping their spacing");
+  assert.ok(b.y > 700, `starting at the page's top margin (y ${b.y})`);
+  for (const t of ["Line A under it.", "Line B under it.", "Line C under it.", "Heading at the top", "Page 1 of 9"]) {
+    assert.equal([...textOf(result.bytes, 0), ...textOf(result.bytes, 1)].filter((x) => x === t).length, 1, `${t} once`);
+  }
+  assert.ok(textOf(result.bytes, 0).includes("Page 1 of 9"), "the footer stays on its page");
+});
+
+test("a paragraph too long for the page continues on the new page, followed by what was below it", async () => {
+  const { bytes, top, width } = await nearBottomPdf();
+  const para = findParagraph(bytes, 0, [150, top + 3]);
+  let longer = para.text;
+  while (wrapText(longer, () => COLUMN, width).length < para.lineCount + 12) longer += " More words here.";
+
+  const result = await replaceParagraph(bytes, para, longer, { allowOverflow: false });
+
+  assert.equal(result.newPage, 1);
+  const [first, second] = [linesOf(result.bytes), linesOf(result.bytes, 1)];
+  const onFirst = first.filter((l) => l.y > 30 && l.y <= top).map((l) => l.text.trim());
+  const onSecond = second.filter((l) => !/^Line [ABC]/.test(l.text.trim())).map((l) => l.text.trim());
+  assert.ok(onSecond.length > 0, "some of the paragraph moved over");
+  assert.equal([...onFirst, ...onSecond].join(" ").replace(/\s+/g, " "), longer.replace(/\s+/g, " "), "the whole text, once, in order");
+  assert.ok(!first.some((l) => l.y < 30 && l.text.trim() !== "Page 1 of 9"), "nothing runs into the footer");
+  const lastOfPara = Math.min(...second.filter((l) => !/^Line [ABC]/.test(l.text.trim())).map((l) => l.y));
+  const a = second.find((l) => l.text.trim() === "Line A under it.");
+  assert.ok(a && a.y < lastOfPara, "the lines below follow the paragraph");
+  assert.ok(second.some((l) => l.text.trim() === "Line C under it."));
+});
+
+test("still refuses inside a box at the bottom of the page (a box isn't split), unless told to place it anyway", async () => {
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.addPage([600, 800]);
   const width = (t) => helv.widthOfTextAtSize(t, 12);
   const body = wrapText(BODY, () => COLUMN, width);
-  const top = 50 + (body.length - 1) * 15; // last line 30pt above a footer near the page edge
+  const top = 50 + (body.length - 1) * 15; // last line 30pt above the page edge
+  page.drawRectangle({ x: 60, y: 40, width: 480, height: top - 40 + 20, color: rgb(0.85, 0.92, 1) });
   body.forEach((t, i) => page.drawText(t, { x: 72, y: top - i * 15, size: 12, font: helv }));
-  page.drawText("Footer at the very bottom.", { x: 72, y: 20, size: 12, font: helv });
   const bytes = await doc.save();
   const para = findParagraph(bytes, 0, [150, top + 3]);
-  const longer = `${para.text} ${para.text}`;
+  const longer = Array(4).fill(para.text).join(" "); // well past the page edge
 
   const refused = await replaceParagraph(bytes, para, longer, { allowOverflow: false });
   assert.equal(refused.bytes, null);
@@ -410,6 +479,72 @@ test("making a word bold uses the page's own bold font, else a standard bold", a
   const line = findParagraph(plain, 0, [130, 705]);
   const italic = await replaceParagraph(plain, line, [{ text: "Hello ", style: 0 }, { text: "wonderful", style: 0, italic: true }, { text: " world", style: 0 }]);
   assert.deepEqual(fontsOfWord(italic.bytes, "wonderful"), ["Times-Italic"]);
+});
+
+// ---------- decorations that grow and shrink with their paragraph ----------
+
+const BOX_BOTTOM = 640;
+/** A light-blue callout box (user y 640–700, a small margin under its text like real callouts) with a dark accent bar on its left, a "NOTE" label,
+ * a two-line paragraph inside, and a heading below the box. No page background. */
+async function calloutPdf() {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  page.drawRectangle({ x: 60, y: BOX_BOTTOM, width: 480, height: 700 - BOX_BOTTOM, color: rgb(0.85, 0.92, 1) });
+  page.drawRectangle({ x: 60, y: BOX_BOTTOM, width: 4, height: 700 - BOX_BOTTOM, color: rgb(0, 0.3, 0.6) });
+  page.drawText("NOTE", { x: 80, y: 685, size: 9, font: helv });
+  page.drawText("Callouts hold a short paragraph that explains one idea in", { x: 80, y: 665, size: 12, font: helv });
+  page.drawText("a few words, like this one.", { x: 80, y: 650, size: 12, font: helv });
+  page.drawText("After the box", { x: 60, y: 570, size: 14, font: helv });
+  return doc.save();
+}
+
+/** The colour of page 1 at user-space point (x, y), as 0–255 [r, g, b]. */
+function colorAt(bytes, x, y) {
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf");
+  try {
+    const pix = doc.loadPage(0).toPixmap(mupdf.Matrix.scale(2, 2), mupdf.ColorSpace.DeviceRGB, false);
+    const at = (Math.round((800 - y) * 2) * pix.getWidth() + Math.round(x * 2)) * 3;
+    return [...pix.getPixels().slice(at, at + 3)];
+  } finally {
+    doc.destroy();
+  }
+}
+const isFill = ([r, g, b]) => b > 240 && r > 200 && r < 230; // the box's light blue
+const isBar = ([r, g, b]) => r < 30 && b > 130; // the accent bar's dark blue
+const isWhite = (c) => c.every((v) => v > 245);
+
+test("a box and accent bar around a paragraph grow with it, and what's below moves past them", async () => {
+  const bytes = await calloutPdf();
+  const para = findParagraph(bytes, 0, [150, 668]);
+  const result = await replaceParagraph(bytes, para, `${para.text} It grows by two lines once this longer sentence is added at its end.`);
+
+  const grown = result.pushed;
+  assert.ok(grown > 0 && near(grown, (result.lines - para.lineCount) * 15, 0.5), `pushed ${grown}`);
+  assert.ok(isFill(colorAt(result.bytes, 300, BOX_BOTTOM - grown + 5)), "fill reaches the new bottom");
+  assert.ok(isWhite(colorAt(result.bytes, 300, BOX_BOTTOM - grown - 5)), "and stops there");
+  for (const y of [690, 660, 645, BOX_BOTTOM, BOX_BOTTOM - grown + 3]) assert.ok(isBar(colorAt(result.bytes, 62, y)), `bar unbroken at ${y}`);
+  assert.ok(isWhite(colorAt(result.bytes, 62, BOX_BOTTOM - grown - 5)), "bar ends with the box");
+  assert.ok(isFill(colorAt(result.bytes, 300, 698)) && isWhite(colorAt(result.bytes, 300, 703)), "top stays put");
+  const lines = linesOf(result.bytes);
+  assert.equal(lines.filter((l) => l.text === "NOTE").length, 1, "the label is there once");
+  assert.ok(lines.some((l) => l.text === "NOTE" && near(l.y, 685, 0.5)));
+  assert.ok(lines.some((l) => l.text === "After the box" && near(l.y, 570 - grown, 0.5)), "heading moved below the box");
+});
+
+test("a box around a paragraph shrinks with it", async () => {
+  const bytes = await calloutPdf();
+  const para = findParagraph(bytes, 0, [150, 668]);
+  const result = await replaceParagraph(bytes, para, "Callouts hold a short paragraph.");
+
+  const pulled = result.pulled;
+  assert.ok(near(pulled, 15, 0.5), `pulled ${pulled}`);
+  assert.ok(isFill(colorAt(result.bytes, 300, BOX_BOTTOM + pulled + 5)), "fill down to the new bottom");
+  assert.ok(isWhite(colorAt(result.bytes, 300, BOX_BOTTOM + pulled - 5)), "nothing of the box below it");
+  assert.ok(isWhite(colorAt(result.bytes, 62, BOX_BOTTOM + pulled - 5)), "nor of the bar");
+  assert.ok(isBar(colorAt(result.bytes, 62, 670)), "bar still there inside");
+  const lines = linesOf(result.bytes);
+  assert.ok(lines.some((l) => l.text === "After the box" && near(l.y, 570 + pulled, 0.5)), "heading moved up");
 });
 
 // ---------- underline and colour ----------
