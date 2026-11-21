@@ -26,7 +26,7 @@ npm run build    # static build in dist/
 - Combine files: append other PDFs to the current one
 - Recognize text (OCR): makes scanned pages searchable, fully offline (Tesseract)
 - Word → PDF: open (or combine) a .docx and it is converted on the device, with real selectable text: styles, lists, pictures, tables (borders, shading, merged cells), page breaks, and the header/footer with page numbers
-- Pictures → PDF: open (or combine) JPEG, PNG, WebP, GIF or BMP files and each becomes a page its own shape; pictures picked together make one PDF. JPEG/PNG are embedded untouched, and phone photos stored sideways are turned upright
+- Pictures → PDF: open (or combine) JPEG, PNG, WebP, GIF, BMP, HEIC (iPhone) or SVG files and each becomes a page its own shape; pictures picked together make one PDF. JPEG/PNG are embedded untouched, phone photos stored sideways are turned upright, HEIC is decoded on the device (libheif) and SVG is drawn sharp at 300 dpi
 - PDF → Word (To Word): an editable .docx with paragraphs, headings, bold/italic/colours, bullets, real Word tables (grid and row-striped, merged cells, borders, shading), pictures, diagrams as pictures, cover artwork behind the text, page size/margins, and the running header/footer with live page numbers
 - Compress: drops unused/duplicate objects and recompresses streams; images over 2000 px are reduced (photos as JPEG, others stay lossless). Undoable; never makes the file bigger
 - Edit text: click any text and its whole paragraph opens in place; edits re-wrap inside the paragraph's column, in the document's own embedded font (a similar standard font only for letters it lacks). Bold and italic words keep their style, and Ctrl+B / Ctrl+I change it (using the page's own bold/italic font when it has one). When a paragraph grows, the content below it in its column moves down to make room (other columns stay put); when it shrinks, that content moves back up to close the gap. Text that would push content off the page is held back until you confirm
@@ -46,7 +46,7 @@ npm run build    # static build in dist/
 | `src/compress-pdf.js` | MuPDF compression: image downsampling + compact save — unit-tested |
 | `src/docx.js`, `src/convert.js` | Word (.docx) → XHTML (own zip + XML reader, no dependencies); MuPDF lays it out, pdf-lib stamps header/footer — unit-tested |
 | `src/pdf-layout.js`, `src/pdf-to-docx.js` | PDF → Word: MuPDF reads lines, pictures and drawings (tables rebuilt from cell borders/shading, diagrams pictured); docx writes the Word file — unit-tested |
-| `src/image-to-pdf.js` | Pictures → PDF: one page per picture, EXIF orientation honoured — unit-tested |
+| `src/image-to-pdf.js` | Pictures → PDF: one page per picture, EXIF orientation honoured; HEIC via libheif, SVG via the browser — unit-tested |
 | `src/textedit.js`, `src/textedit-pdf.js` | In-place line editor; MuPDF line lookup/removal + pdf-lib rewrite — unit-tested |
 | `src/main.js` | Tabs, files, toolbar and keyboard wiring |
 
@@ -59,6 +59,7 @@ npm run build    # static build in dist/
 | [MuPDF.js](https://github.com/ArtifexSoftware/mupdf.js) | AGPL-3.0 | Redaction, text lookup for editing, compression |
 | [tesseract.js](https://github.com/naptha/tesseract.js) | Apache-2.0 | OCR |
 | [docx](https://github.com/dolanmiu/docx) | MIT | Writing Word files (PDF → Word) |
+| [libheif-js](https://github.com/catdad-experiments/libheif-js) | LGPL-3.0 | Decoding HEIC (iPhone) photos, loaded only when one is opened |
 
 ## Roadmap
 

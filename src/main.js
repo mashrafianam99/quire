@@ -141,26 +141,13 @@ const isPdf = (f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
 const isWord = (f) => /\.docx$/i.test(f.name)
   || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-const isImage = (f) => /^image\/(jpeg|png|webp|gif|bmp)$/.test(f.type) || /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name);
-
-/** JPEG and PNG as they are; WebP, GIF (first frame) and BMP redrawn as PNG by the browser. */
-async function pictureBytes(f) {
-  if (/^image\/(jpeg|png)$/.test(f.type)) return new Uint8Array(await f.arrayBuffer());
-  try {
-    const bitmap = await createImageBitmap(f);
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    canvas.getContext("2d").drawImage(bitmap, 0, 0);
-    bitmap.close();
-    return new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
-  } catch {
-    throw new Error(`“${f.name}” couldn't be read as a picture.`);
-  }
-}
+const PICTURE = /\.(jpe?g|png|webp|gif|bmp|heic|heif|svg)$/i;
+const isImage = (f) => /^image\/(jpeg|png|webp|gif|bmp|heic|heif|svg\+xml)$/.test(f.type) || PICTURE.test(f.name);
 
 /** All pictures picked together, as one PDF with a page each, named after the first. */
 async function picturesToPdf(pictures) {
-  const { imagesToPdf } = await import("./image-to-pdf.js");
-  const bytes = await imagesToPdf(await Promise.all(pictures.map(pictureBytes)));
+  const { imagesToPdf, pictureFromFile } = await import("./image-to-pdf.js");
+  const bytes = await imagesToPdf(await Promise.all(pictures.map(pictureFromFile)));
   return { name: pictures[0].name.replace(/\.[^.]+$/, ".pdf"), bytes, converted: true };
 }
 

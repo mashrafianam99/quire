@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as mupdf from "mupdf";
-import { imagesToPdf, jpegOrientation } from "../src/image-to-pdf.js";
+import { hasOwnSize, imagesToPdf, isHeif, jpegOrientation } from "../src/image-to-pdf.js";
 
 /** A w×h picture, white with its top quarter red, as PNG or JPEG bytes. */
 function picture(w, h, format) {
@@ -60,6 +60,27 @@ test("a phone photo stored sideways is turned by its EXIF orientation", async ()
     { width: 150, height: 300, red: ["right"] }, // 6: top turned to the right
     { width: 150, height: 300, red: ["left"] }, // 8: top turned to the left
   ]);
+});
+
+test("a given page size wins over the pixels' (an SVG drawn at 300 dpi keeps its own size)", async () => {
+  const [page] = inspect(await imagesToPdf([{ bytes: picture(1250, 625, "png"), size: [300, 150] }]));
+  assert.deepEqual([page.width, page.height, page.red], [300, 150, ["top"]]);
+});
+
+test("an SVG with only a viewBox counts as unsized; width/height in units or none count as sized", () => {
+  const svg = (attrs) => new TextEncoder().encode(`<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" ${attrs}><path/></svg>`);
+  assert.equal(hasOwnSize(svg('width="500pt" height="500pt" viewBox="0 0 500 500"')), true);
+  assert.equal(hasOwnSize(svg('width="4100" viewBox="0 0 4100 2733" height="2733"')), true);
+  assert.equal(hasOwnSize(svg('viewBox="0 0 146.814 153.165"')), false);
+  assert.equal(hasOwnSize(svg('width="100%" height="100%" viewBox="0 0 10 10"')), false);
+});
+
+test("iPhone HEIC files are recognised by their brand, not their name", () => {
+  const box = (brand) => Uint8Array.from([0, 0, 0, 24, ..."ftyp".split("").map((c) => c.charCodeAt(0)), ...brand.split("").map((c) => c.charCodeAt(0))]);
+  assert.equal(isHeif(box("heic")), true);
+  assert.equal(isHeif(box("mif1")), true);
+  assert.equal(isHeif(box("isom")), false); // an MP4 video
+  assert.equal(isHeif(picture(4, 4, "jpeg")), false);
 });
 
 test("refuses bytes that aren't JPEG or PNG", async () => {
