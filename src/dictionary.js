@@ -2,6 +2,7 @@
 // scripts/build-dictionary.mjs writes to public/dictionary/. Nothing leaves the device.
 
 import { IRREGULAR, FUNCTION_WORDS, CONTRACTIONS, ABBREVIATIONS } from "./dictionary-extra.js";
+import { deviceStore } from "./device-store.js";
 
 /** The shard a lemma lives in: its first letter, a–z, else "_". */
 export const shardOf = (lemma) => (/^[a-z]/.test(lemma) ? lemma[0] : "_");
@@ -158,37 +159,13 @@ async function fetchFromApp(key) {
   return response.text();
 }
 
-/** Browser storage that outlives the page (IndexedDB); memory only, if the browser won't allow it. */
-function deviceStore() {
-  const memory = new Map();
-  const fallback = { get: async (k) => memory.get(k), put: async (k, v) => { memory.set(k, v); } };
-  if (typeof indexedDB === "undefined") return fallback;
-  const db = new Promise((ok, fail) => {
-    const open = indexedDB.open("quire-dictionary", 1);
-    open.onupgradeneeded = () => open.result.createObjectStore("shards");
-    open.onsuccess = () => ok(open.result);
-    open.onerror = () => fail(open.error);
-  });
-  const run = (mode, act) => db.then((d) => new Promise((ok, fail) => {
-    const tx = d.transaction("shards", mode);
-    const request = act(tx.objectStore("shards"));
-    tx.oncomplete = () => ok(request.result);
-    tx.onerror = () => fail(tx.error);
-  }));
-  // storage can be refused (private windows, full disk): then lookups simply use the app's files
-  return {
-    get: (k) => run("readonly", (s) => s.get(k)).catch(() => fallback.get(k)),
-    put: (k, v) => run("readwrite", (s) => s.put(v, k)).catch(() => fallback.put(k, v)),
-  };
-}
-
 /**
  * Loads dictionary shards from what's stored on the device, else from the app's files (and
  * stores them). `warm()` stores every shard ahead of time, so the dictionary keeps working
  * when the app's server or the network is gone; it's a no-op once all are stored.
  * @param {{fetchFile?: (key: string) => Promise<string>, store?: {get, put}}} [sources]
  */
-export function createShardLoader({ fetchFile = fetchFromApp, store = deviceStore() } = {}) {
+export function createShardLoader({ fetchFile = fetchFromApp, store = deviceStore("quire-dictionary", "shards") } = {}) {
   const parsed = new Map(); // key → Promise of the shard object, most recent last
 
   async function text(key) {

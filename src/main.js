@@ -8,6 +8,8 @@ import { createTextEditor } from "./textedit.js";
 import { createDefiner } from "./define.js";
 import { createFormDesigner } from "./formdesign.js";
 import { createThemeMenu } from "./theme.js";
+import { createRecent } from "./recent.js";
+import { createRecentView } from "./recent-ui.js";
 import {
   applyPageOrder, deletePages, rotatePages, extractPages, mergePdfs,
 } from "./pageops.js";
@@ -25,6 +27,7 @@ const zoomLabel = $("#zoom-label");
 /** @type {{id:number, name:string, bytes:Uint8Array, dirty:boolean, undoStack?:Uint8Array[], redoStack?:Uint8Array[]}[]} */
 const tabs = [];
 let active = null; // the tab whose document the viewer shows
+let activeDoc = null; // its pdf.js document
 let nextId = 1;
 let thumbs = null;
 
@@ -110,16 +113,19 @@ async function activateNow(tab, { keepView = false } = {}) {
     pageInput.max = doc.numPages;
     pageInput.value = 1;
     if (searchInput.value) viewer.find(searchInput.value);
+    activeDoc = doc;
+    return doc;
   } catch (err) {
     if (!(err instanceof CancelledError)) toast(`Couldn't open “${tab.name}”: ${err.message}`);
     await removeTabNow(tab);
   }
 }
 
+/** Open `bytes` in a new tab; returns the pdf.js document, or undefined if it couldn't be opened. */
 async function addTabNow(name, bytes, { dirty = false } = {}) {
   const tab = { id: nextId++, name, bytes, dirty };
   tabs.push(tab);
-  await activateNow(tab);
+  return activateNow(tab);
 }
 
 async function removeTabNow(tab) {
@@ -129,7 +135,7 @@ async function removeTabNow(tab) {
     active = null;
     const next = tabs[Math.min(i, tabs.length - 1)];
     if (next) await activateNow(next);
-    else { thumbs?.destroy(); thumbs = null; await viewer.close(); }
+    else { thumbs?.destroy(); thumbs = null; activeDoc = null; await viewer.close(); }
   }
   renderTabs();
 }
@@ -173,9 +179,29 @@ async function readFiles(fileList) {
 
 async function openFiles(fileList) {
   for (const { name, bytes, converted } of await readFiles(fileList)) {
-    serial(() => addTabNow(name, bytes, { dirty: !!converted }));
+    serial(async () => {
+      const doc = await addTabNow(name, bytes, { dirty: !!converted });
+      if (doc) recentView.remember(name, bytes, doc);
+    });
   }
 }
+
+// ---------- recent files ----------
+const recent = createRecent();
+const recentView = createRecentView({
+  recent,
+  cards: $(".recent-cards"),
+  section: $(".recent"),
+  menu: $("#recent-menu"),
+  onOpen: (entry) => serial(async () => {
+    const open = tabs.find((t) => t.name === entry.name);
+    if (open) { if (open !== active) await activateNow(open); return; }
+    const bytes = await recent.load(entry.id);
+    if (!bytes) { toast(`“${entry.name}” is no longer kept on this device.`); return; }
+    const doc = await addTabNow(entry.name, bytes);
+    if (doc) recentView.remember(entry.name, bytes, doc);
+  }),
+});
 
 const saveActive = () => serial(async () => {
   if (!active) return;
@@ -186,6 +212,7 @@ const saveActive = () => serial(async () => {
   viewer.markSaved();
   renderTabs();
   toast("Saved.");
+  if (activeDoc) recentView.remember(active.name, bytes, activeDoc); // reopening gives the saved version
 });
 
 const PDF_FILE = { description: "PDF document", type: "application/pdf", extension: ".pdf" };
