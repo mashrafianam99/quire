@@ -4,7 +4,6 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
-import android.util.Base64;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -12,20 +11,25 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 /**
  * Hands documents that other apps open or share with Quire ("Open with", "Share") to the page,
- * as {name, data (base64)} or {name, error}.
+ * as {name, path, size} (a copy in Quire's cache, which the page reads and deletes) or {name, error}.
  */
 @CapacitorPlugin(name = "QuireIntent")
 public class QuireIntentPlugin extends Plugin {
-    private static final long MAX_BYTES = 100L * 1024 * 1024; // the page couldn't hold much more anyway
+    private static final long MAX_BYTES = 200L * 1024 * 1024; // the page couldn't hold much more anyway
+    private static final String INCOMING = "incoming";
     private JSObject pending; // the file Quire was started with, until the page asks for it
 
     @Override
     public void load() {
+        clearIncoming();
         pending = fileFrom(getActivity().getIntent());
     }
 
@@ -44,6 +48,10 @@ public class QuireIntentPlugin extends Plugin {
         call.resolve(result);
     }
 
+    /**
+     * Copy the shared document into Quire's cache, 64 KB at a time, and return where it is. The bytes are
+     * never held in Java memory: base64 text of a 22 MB PDF took ~150 MB and crashed (Java's limit is 256 MB).
+     */
     @SuppressWarnings("deprecation") // getParcelableExtra(String) is what API 24–32 have
     private JSObject fileFrom(Intent intent) {
         if (intent == null) return null;
@@ -53,24 +61,34 @@ public class QuireIntentPlugin extends Plugin {
         if (uri == null) return null;
         JSObject file = new JSObject();
         file.put("name", nameOf(uri));
-        try (InputStream in = getContext().getContentResolver().openInputStream(uri)) {
-            if (in == null) throw new java.io.IOException("the other app didn't give the file");
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[64 * 1024];
+        File dir = new File(getContext().getCacheDir(), INCOMING);
+        File copy = new File(dir, System.nanoTime() + ".bin"); // the page reads it, then deletes it
+        try {
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Quire couldn't make room for it");
             long total = 0;
-            for (int n; (n = in.read(buffer)) > 0; ) {
-                total += n;
-                if (total > MAX_BYTES) {
-                    file.put("error", "it is larger than 100 MB");
-                    return file;
+            try (InputStream in = getContext().getContentResolver().openInputStream(uri);
+                 OutputStream out = new FileOutputStream(copy)) {
+                if (in == null) throw new IOException("the other app didn't give the file");
+                byte[] buffer = new byte[64 * 1024];
+                for (int n; (n = in.read(buffer)) > 0; ) {
+                    total += n;
+                    if (total > MAX_BYTES) throw new IOException("it is larger than 200 MB");
+                    out.write(buffer, 0, n);
                 }
-                out.write(buffer, 0, n);
             }
-            file.put("data", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
+            file.put("path", copy.getAbsolutePath());
+            file.put("size", total);
         } catch (Exception e) {
+            copy.delete();
             file.put("error", e.getMessage() == null ? "it couldn't be read" : e.getMessage());
         }
         return file;
+    }
+
+    /** Copies left by an earlier run (the page deletes each one after reading it, unless Quire was closed first). */
+    private void clearIncoming() {
+        File[] old = new File(getContext().getCacheDir(), INCOMING).listFiles();
+        if (old != null) for (File f : old) f.delete();
     }
 
     private String nameOf(Uri uri) {
