@@ -18,6 +18,8 @@ async function startWorker() {
     langPath: ASSETS + "lang",
     workerBlobURL: false,
     cacheMethod: "none",
+    // Android's build unzips .gz files it packs into the app (eng.traineddata.gz → eng.traineddata)
+    gzip: !window.Capacitor?.isNativePlatform?.(),
   });
 }
 

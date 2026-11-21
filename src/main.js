@@ -88,6 +88,9 @@ function renderTabs() {
     return el;
   }));
   app.classList.toggle("empty", tabs.length === 0);
+  // the phone shows the open document's name in its top bar (the tab strip lives in a menu there)
+  $(".doc-switch b").textContent = active ? (active.dirty ? "● " : "") + active.name : "";
+  $(".doc-count").textContent = tabs.length > 1 ? String(tabs.length) : "";
 }
 
 /** Keep annotations/form input when leaving a tab. */
@@ -206,6 +209,47 @@ if (desktop) {
   desktop.onOpenFiles(openDesktopFiles); // ones double-clicked while it's open
 }
 
+// ---------- Android app (Capacitor injects window.Capacitor; src/mobile.js does the native parts) ----------
+const mobile = window.Capacitor?.isNativePlatform?.() ? import("./mobile.js") : null;
+
+/** The phone layout (styles in `.android`): bar on top, tools at the bottom, page number on the page. */
+function layOutForPhone() {
+  document.documentElement.classList.add("android");
+  const top = $(".topbar");
+  for (const id of ["#undo", "#redo"]) { $(id).classList.add("doc-only"); top.insertBefore($(id), $("#save")); }
+  top.append($(".more-button")); // ⋮ after Save
+  $("#docs-menu").append(tabStrip);
+  // search docks at the bottom, opened from ⋮ → Search, with previous/next match buttons
+  const findBar = $("#find-bar");
+  findBar.prepend($(".search"));
+  const step = (previous) => { if (searchInput.value) viewer.find(searchInput.value, { again: true, previous }); };
+  $("#show-search").onclick = () => { findBar.hidden = false; searchInput.focus(); searchInput.select(); };
+  $("#find-prev").onclick = () => step(true);
+  $("#find-next").onclick = () => step(false);
+  $("#find-close").onclick = () => { findBar.hidden = true; searchInput.value = ""; viewer.find(""); searchInput.blur(); };
+  const pill = $(".page-nav");
+  pill.classList.add("page-pill");
+  $(".workspace").append(pill);
+  const workspace = $(".workspace");
+  $("#show-pages").onclick = () => workspace.classList.toggle("pages-open");
+  thumbList.addEventListener("click", (e) => { if (e.target.closest(".thumb-page")) workspace.classList.remove("pages-open"); });
+  $("#viewer").addEventListener("pointerdown", () => workspace.classList.remove("pages-open"));
+  $("#show-theme").onclick = () => $("#theme-menu").showPopover();
+}
+
+if (mobile) {
+  layOutForPhone();
+  mobile.then((m) => m.listenForFiles(
+    ({ name, bytes }) => openFiles([new File([bytes], name)]),
+    (name, why) => toast(`Couldn't open “${name}”: ${why}.`),
+  )).catch((err) => toast(err.message));
+}
+
+const shareActive = () => serial(async () => {
+  if (!active || !mobile) return;
+  (await mobile).shareFile(active.name, await viewer.currentBytes(active.bytes));
+});
+
 // ---------- recent files ----------
 const recent = createRecent();
 const recentView = createRecentView({
@@ -234,7 +278,7 @@ const saveActive = () => serial(async () => {
   active.dirty = false;
   viewer.markSaved();
   renderTabs();
-  toast("Saved.");
+  toast(saved.place ? `Saved to ${saved.place}/${saved.name}.` : "Saved.");
   if (activeDoc) recentView.remember(active.name, bytes, activeDoc); // reopening gives the saved version
 });
 
@@ -242,9 +286,14 @@ const PDF_FILE = { description: "PDF document", type: "application/pdf", extensi
 const WORD_FILE = { description: "Word document", extension: ".docx",
   type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
 
-/** Ask where to save and write the file: true, or (desktop app) {path, name}; false/null if cancelled. */
+/**
+ * Ask where to save and write the file: true, (desktop app) {path, name}, (Android) {name, place};
+ * false/null if cancelled.
+ */
 async function saveBytes(bytes, name, file = PDF_FILE) {
   if (desktop) return desktop.saveAs(name, bytes, file.extension);
+  // shortcut: Android saves into Documents/Quire without asking; a folder picker needs a native plugin
+  if (mobile) return (await mobile).saveToDocuments(name, bytes);
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
@@ -661,15 +710,20 @@ compareInput.onchange = async () => {
 $("#compare").onclick = chooseComparison;
 $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
+$("#share").onclick = shareActive;
 $("#ocr").onclick = recognizeText;
 $("#compress").onclick = compressDocument;
 $("#pdfa").onclick = makePdfA;
 for (const menu of document.querySelectorAll(".more-menu")) { // the Tools and Theme menus
   menu.addEventListener("beforetoggle", (e) => {
     if (e.newState !== "open") return;
-    const r = $(`[popovertarget="${menu.id}"]`).getBoundingClientRect(); // under its button, right edges lined up
+    // under its button (the visible one: the phone opens Theme from the ⋮ menu), right edges lined up
+    const button = [...document.querySelectorAll(`[popovertarget="${menu.id}"]`)].find((b) => b.offsetParent)
+      ?? $(".more-button");
+    const r = button.getBoundingClientRect();
     menu.style.top = `${r.bottom + 6}px`;
-    menu.style.right = `${Math.max(8, innerWidth - r.right)}px`;
+    if (menu.classList.contains("docs-menu")) menu.style.left = `${Math.max(8, r.left)}px`; // under the title
+    else menu.style.right = `${Math.max(8, innerWidth - r.right)}px`;
   });
   menu.addEventListener("click", (e) => { if (e.target.closest(".menu-item")) menu.hidePopover(); });
 }
@@ -735,6 +789,23 @@ document.addEventListener("wheel", (e) => {
   e.preventDefault();
   if (active && e.target.closest?.("#viewer")) viewer.zoomBy(Math.exp(-e.deltaY * ZOOM_SPEED), [e.clientX, e.clientY]);
 }, { passive: false });
+
+// Two-finger pinch on a touch screen zooms the document around the fingers.
+let pinch = null; // the fingers' distance at the last move
+const fingers = (t) => ({
+  gap: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY),
+  mid: [(t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2],
+});
+const viewerBox = $("#viewer");
+viewerBox.addEventListener("touchstart", (e) => { pinch = e.touches.length === 2 ? fingers(e.touches).gap : null; }, { passive: true });
+viewerBox.addEventListener("touchmove", (e) => {
+  if (pinch == null || e.touches.length !== 2 || !active) return;
+  e.preventDefault();
+  const { gap, mid } = fingers(e.touches);
+  viewer.zoomBy(gap / pinch, mid);
+  pinch = gap;
+}, { passive: false });
+viewerBox.addEventListener("touchend", (e) => { if (e.touches.length < 2) pinch = null; });
 
 // Drop PDFs anywhere: opens them as new tabs.
 window.addEventListener("dragover", (e) => {

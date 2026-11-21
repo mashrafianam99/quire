@@ -35,7 +35,9 @@
     <symbol id="i-word" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11l1.5 6 1.5-4 1.5 4 1.5-6"/></symbol>
     <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></symbol>
     <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.6M8.2 13.2l7.6 4.6"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
     <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor"/></symbol>
     <symbol id="i-device" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
@@ -48,6 +50,9 @@
   <header class="topbar">
     <div class="brand"><span class="brand-mark"></span>Quire</div>
     <nav id="tabs" class="tabs" role="tablist" aria-label="Open documents"></nav>
+    <!-- Android: the open documents live in this menu instead of a tab strip -->
+    <button class="btn doc-switch phone-only doc-only" popovertarget="docs-menu" aria-haspopup="menu" title="Open documents"><b></b><span class="doc-count"></span><svg class="i"><use href="#i-chevron"/></svg></button>
+    <div id="docs-menu" class="more-menu docs-menu" popover aria-label="Open documents"><p class="menu-heading">Open documents</p></div>
     <button class="btn icon theme-button" popovertarget="theme-menu" aria-haspopup="menu" aria-label="Theme" title="Theme: light, dark, warm or greyscale"><svg class="i"><use href="#i-theme"/></svg></button>
     <div id="theme-menu" class="more-menu theme-menu" popover role="menu" aria-label="Theme">
       <p class="menu-heading">Theme</p>
@@ -105,8 +110,13 @@
     </div>
     <button class="btn more-button" popovertarget="more-menu" aria-haspopup="menu"><svg class="i"><use href="#i-tools"/></svg><span>Tools</span></button>
     <div id="more-menu" class="more-menu" popover>
+      <button class="menu-item phone-only doc-only" id="show-search"><svg class="i"><use href="#i-search"/></svg><span><b>Search</b><small>Find words in this document</small></span></button>
+      <button class="menu-item phone-only" data-open><svg class="i"><use href="#i-open"/></svg><span><b>Open file</b><small>PDF, Word or picture</small></span></button>
+      <button class="menu-item phone-only doc-only" id="show-pages"><svg class="i"><use href="#i-combine"/></svg><span><b>Pages</b><small>Go to, rotate, delete or reorder pages</small></span></button>
+      <button class="menu-item phone-only" id="show-theme"><svg class="i"><use href="#i-theme"/></svg><span><b>Theme</b><small>Light, dark, warm or greyscale</small></span></button>
       <p class="menu-heading">File</p>
       <button class="menu-item" id="print"><svg class="i"><use href="#i-print"/></svg><span><b>Print</b><small>Ctrl+P</small></span></button>
+      <button class="menu-item" id="share"><svg class="i"><use href="#i-share"/></svg><span><b>Share</b><small>Send a copy to another app</small></span></button>
       <button class="menu-item" id="combine"><svg class="i"><use href="#i-combine"/></svg><span><b>Combine files</b><small>Add other PDFs, Word files or pictures to the end</small></span></button>
       <button class="menu-item" id="compare"><svg class="i"><use href="#i-compare"/></svg><span><b>Compare</b><small>See what changed since an earlier version</small></span></button>
       <p class="menu-heading">Convert &amp; improve</p>
@@ -118,6 +128,12 @@
   </div>
 
   <div class="context-bar">
+    <!-- Android: search docks here (main.js moves the search box in), with previous/next match -->
+    <div class="group find-bar phone-only" id="find-bar" aria-label="Search" hidden>
+      <button class="btn icon" id="find-prev" aria-label="Previous match" title="Previous match"><svg class="i"><use href="#i-up"/></svg></button>
+      <button class="btn icon" id="find-next" aria-label="Next match" title="Next match"><svg class="i"><use href="#i-chevron"/></svg></button>
+      <button class="btn icon" id="find-close" aria-label="Close search" title="Close search">×</button>
+    </div>
     <div class="group form-bar" id="form-bar" aria-label="Form fields" hidden>
       <span class="context-label">Add a field:</span>
       <button class="btn" data-field-type="text" aria-pressed="true">Text</button>
@@ -149,7 +165,8 @@
       <div class="welcome-card">
         <div class="welcome-icon" aria-hidden="true"></div>
         <h1>Open a PDF to get started</h1>
-        <p>Drop files anywhere, or choose them from your computer.<br />Everything stays on your device.</p>
+        <p class="computer-only">Drop files anywhere, or choose them from your computer.<br />Everything stays on your device.</p>
+        <p class="phone-only">Choose a PDF, Word file or picture on your phone,<br />or open one with Quire from another app. Everything stays on your device.</p>
         <button class="btn primary large" data-open>Choose PDF, Word or picture files</button>
       </div>
       <section class="recent" aria-label="Recent files" hidden>

@@ -1,0 +1,6 @@
+{
+  "appId": "org.quire.editor",
+  "appName": "Quire",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}

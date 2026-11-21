@@ -106,7 +106,9 @@ export function createViewer(container, { askPassword }) {
   let modified = false; // edits since open or last save
   let restoreView = null;
   eventBus.on("pagesinit", () => {
-    viewer.currentScaleValue = restoreView?.scale ?? "1"; // every document opens at 100%
+    // every document opens at 100%; on a phone at the screen's width (100% would cut the lines off)
+    viewer.currentScaleValue = restoreView?.scale
+      ?? (document.documentElement.classList.contains("android") ? "page-width" : "1");
     if (restoreView) viewer.currentPageNumber = Math.min(restoreView.page, viewer.pagesCount);
     restoreView = null;
   });

@@ -152,6 +152,10 @@ button, input { font: inherit; color: inherit; }
 .menu-item b { display: block; font-weight: 550; }
 .menu-item small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
 .theme-menu { width: 260px; }
+/* Share only exists in the Android app; its web view can't print */
+#share { display: none; }
+.android #share { display: flex; }
+.android #print { display: none; }
 .menu-item[aria-checked="true"] { background: var(--accent-soft); }
 .menu-item[aria-checked="true"]::after { content: "✓"; margin-left: auto; color: var(--accent); font-weight: 600; }
 .theme-button { border-color: transparent; background: none; }
@@ -477,3 +481,84 @@ button, input { font: inherit; color: inherit; }
   .form-panel { top: auto; left: 0; width: auto; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
   .workspace.form-panel-open .viewer { right: 0; bottom: 45%; }
 }
+
+/* ---------- Android app: a phone layout (html.android is set by main.js inside the app) ---------- */
+.phone-only { display: none !important; }
+.android .phone-only:not([hidden]) { display: revert !important; }
+.android .menu-item.phone-only { display: flex !important; }
+.android #app.empty .doc-only { display: none !important; } /* nothing to search or page through yet */
+.android .computer-only { display: none !important; }
+
+/* top app bar: document switcher, undo/redo, Save, ⋮ */
+.android .topbar { gap: 4px; padding: 6px 8px; }
+.android .tabs, .android .theme-button, .android .split { display: none !important; }
+.android #app:not(.empty) .brand { display: none; }
+.android .doc-switch {
+  flex: 1; min-width: 0; justify-content: flex-start; border-color: transparent; background: none;
+  font-size: 16px; padding: 8px 6px;
+}
+.android .doc-switch b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.android .doc-count:not(:empty) {
+  flex-shrink: 0; min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 12px; line-height: 20px;
+  background: var(--accent-soft); color: var(--text);
+}
+.android #app.empty .topbar { justify-content: space-between; }
+.android .topbar .btn { padding: 9px; }
+.android .topbar .btn > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.android .topbar #undo, .android .topbar #redo, .android .topbar .more-button { border-color: transparent; background: none; }
+.android #app.empty #undo, .android #app.empty #redo { display: none; }
+
+/* the open documents, as a list in their menu */
+.docs-menu { width: min(340px, calc(100vw - 16px)); }
+.docs-menu .tabs { display: flex !important; flex-direction: column; gap: 2px; overflow: visible; }
+.docs-menu .tab { max-width: none; border: 0; border-radius: 8px; }
+.docs-menu .tab-name { flex: 1; padding: 12px 10px; font-size: 15px; text-align: left; }
+.docs-menu .tab-close { padding: 10px 14px; font-size: 20px; }
+.docs-menu .tab.active { background: var(--accent-soft); }
+
+/* the ⋮ menu: search at the top, bigger touch targets */
+.android .more-menu { width: min(340px, calc(100vw - 16px)); }
+.android .menu-item { padding: 11px 10px; }
+
+/* search, docked above the tools: box, match count, previous / next, close */
+.android .find-bar:not([hidden]) { display: flex !important; flex: 1; gap: 2px; min-width: 0; }
+.find-bar .search { flex: 1; min-width: 0; margin-right: 4px; }
+.find-bar .search input { width: 100%; padding-top: 9px; padding-bottom: 9px; padding-right: 76px; font-size: 16px; }
+.find-bar .btn.icon { width: 40px; height: 40px; border-color: transparent; background: none; font-size: 22px; }
+.find-bar #search-count { position: absolute; right: 10px; margin: 0; pointer-events: none; }
+
+/* tools at the bottom, within thumb reach, with their names under the icons */
+.android #app { grid-template-rows: auto 1fr auto auto; }
+.android .workspace { grid-row: 2; }
+.android .context-bar { grid-row: 3; border-top: 1px solid var(--border); border-bottom: 0; }
+.android .toolbar { grid-row: 4; border-top: 1px solid var(--border); border-bottom: 0; padding: 4px 4px 6px; gap: 0; }
+.android .toolbar > .view { display: none; } /* > : the ⋮ menu (with search) is inside the toolbar too */
+.android .tools { gap: 0; }
+.android .btn.tool { flex-direction: column; gap: 3px; min-width: 64px; padding: 7px 4px 5px; font-size: 11px; }
+.android .btn.tool span { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+.android .btn.tool .i { width: 22px; height: 22px; }
+
+/* the page number floats over the page; pinch zooms */
+.page-pill { display: none; }
+.android .page-pill {
+  display: flex; position: absolute; right: 12px; bottom: 12px; z-index: 5; padding: 5px 14px;
+  border-radius: 20px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
+  align-items: center; justify-content: center; gap: 4px; font-size: 14px; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+/* the number box is exactly as wide as the number, so "3 / 9" sits in the middle of the pill */
+.android .page-pill input {
+  field-sizing: content; width: auto; min-width: 1ch; padding: 3px 0; border: 0; background: none;
+  text-align: center; font-size: 14px; color: var(--text); -moz-appearance: textfield;
+}
+.android .page-pill input::-webkit-inner-spin-button, .android .page-pill input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.android .viewer { touch-action: pan-x pan-y; }
+
+/* pages as a drawer from the left (⋮ → Pages) */
+.android .pages-panel {
+  display: block; position: absolute; inset: 0 auto 0 0; width: 180px; z-index: 6;
+  translate: -100% 0; transition: translate 180ms ease; box-shadow: var(--shadow);
+}
+.android .workspace.pages-open .pages-panel { translate: 0 0; }
+.android .thumb-actions { opacity: 1; } /* no hover on a phone */
+.find-bar input::-webkit-search-cancel-button { display: none; } /* the bar has its own close button */

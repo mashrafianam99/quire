@@ -25,6 +25,19 @@ offers Quire as a PDF app), and Save writes straight back to the file you opened
 access to your disk: it can only write to files you opened or chose in a Save dialog
 (`electron/main.mjs`, `electron/preload.cjs`).
 
+### Android app
+
+Needs the Android SDK and a JDK 17–21 (Gradle 8 doesn't run on newer Java).
+
+```sh
+npm run android                      # build, then copy it into android/ (Capacitor)
+cd android && gradlew assembleDebug  # → android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+On the phone: Save writes into Documents/Quire, Tools → Share sends a copy to another app, and PDFs or
+Word files opened from Files, Gmail or WhatsApp ("Open with Quire", "Share → Quire") open in Quire
+(`src/mobile.js`, `android/app/src/main/java/org/quire/editor/QuireIntentPlugin.java`).
+
 ## What works today (phase 1)
 
 - Open many PDFs in tabs (button, Ctrl+O, or drag-and-drop); password-protected files prompt for the password
