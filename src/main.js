@@ -276,6 +276,48 @@ async function combineWith(fileList) {
   await editPages((b) => mergePdfs([b, ...files.map((f) => f.bytes)]));
 }
 
+// ---------- compare ----------
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Compares the open document (the new version) with `older` {name, bytes}; the report opens in a new tab. */
+const compareWith = (older) => serial(async () => {
+  if (!active) return;
+  const newer = { name: active.name, bytes: await viewer.currentBytes(active.bytes) };
+  toast(`Comparing “${newer.name}” with “${older.name}”…`);
+  const { compareDocuments, buildReport } = await import("./compare.js"); // MuPDF is large; load only when used
+  const result = await compareDocuments(older.bytes, newer.bytes);
+  const report = await buildReport(older.bytes, newer.bytes, result, { oldName: older.name, newName: newer.name });
+  await addTabNow(`Compare – ${baseName(older.name)} vs ${baseName(newer.name)}.pdf`, report);
+  const pages = result.pairs.filter((p) => p.old.removed.length || p.new.added.length || p.visual.length).length;
+  toast(pages ? `${plural(result.removed, "word")} removed, ${plural(result.added, "word")} added; ${plural(pages, "page")} with changes.`
+    : "No differences found.");
+});
+
+/** Asks which earlier version to compare with: another open tab, or a file. */
+function chooseComparison() {
+  if (!active) return;
+  const others = tabs.filter((t) => t !== active);
+  if (!others.length) { compareInput.click(); return; }
+  const dialog = $("#compare-dialog");
+  dialog.querySelector("[data-compare-name]").textContent = active.name;
+  const choices = dialog.querySelector(".compare-choices");
+  choices.replaceChildren(choices.querySelector("legend"), ...others.map((t, i) => {
+    const label = document.createElement("label");
+    const radio = Object.assign(document.createElement("input"), { type: "radio", name: "older", value: String(t.id), checked: i === 0 });
+    label.append(radio, ` ${t.name}`);
+    return label;
+  }));
+  dialog.querySelector("[data-compare-file]").onclick = () => { dialog.close(); compareInput.click(); };
+  dialog.onclose = () => {
+    if (dialog.returnValue !== "ok") return;
+    const id = Number(dialog.querySelector("input[name=older]:checked")?.value);
+    const older = tabs.find((t) => t.id === id);
+    if (older) compareWith({ name: older.name, bytes: older.bytes });
+  };
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
 // ---------- tools, search, zoom, paging ----------
 function setTool(mode) {
   redactor.stop();
@@ -505,6 +547,13 @@ openInput.onchange = () => { openFiles(openInput.files); openInput.value = ""; }
 combineInput.onchange = () => { combineWith(combineInput.files); combineInput.value = ""; };
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => openInput.click();
 $("#combine").onclick = () => combineInput.click();
+const compareInput = $("#compare-input");
+compareInput.onchange = async () => {
+  const [older] = await readFiles(compareInput.files); // a Word file is converted, like Open
+  compareInput.value = "";
+  if (older) compareWith(older);
+};
+$("#compare").onclick = chooseComparison;
 $("#save").onclick = saveActive;
 $("#print").onclick = printActive;
 $("#ocr").onclick = recognizeText;
