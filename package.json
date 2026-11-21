@@ -6,7 +6,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test"
+    "test": "node --test",
+    "desktop": "vite build && electron .",
+    "desktop:build": "vite build && electron-builder --win"
   },
   "keywords": [],
   "author": "",
@@ -22,10 +24,46 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
     "vite": "^8.3.8",
     "wordnet-db": "^3.1.14"
   },
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "private": true
+  "private": true,
+  "main": "electron/main.mjs",
+  "build": {
+    "appId": "org.quire.editor",
+    "productName": "Quire",
+    "copyright": "AGPL-3.0-or-later",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF document",
+        "description": "PDF document",
+        "role": "Editor"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "electronLanguages": [
+      "en-US"
+    ]
+  }
 }

@@ -13,6 +13,18 @@ npm test         # unit tests for page operations
 npm run build    # static build in dist/
 ```
 
+### Desktop app (Windows)
+
+```sh
+npm run desktop        # build, then run Quire as a desktop app (Electron)
+npm run desktop:build  # build the installer: release/Quire Setup <version>.exe
+```
+
+The desktop app needs no server and works offline. It opens PDFs you double-click (the installer
+offers Quire as a PDF app), and Save writes straight back to the file you opened. The page has no
+access to your disk: it can only write to files you opened or chose in a Save dialog
+(`electron/main.mjs`, `electron/preload.cjs`).
+
 ## What works today (phase 1)
 
 - Open many PDFs in tabs (button, Ctrl+O, or drag-and-drop); password-protected files prompt for the password

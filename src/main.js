@@ -121,9 +121,12 @@ async function activateNow(tab, { keepView = false } = {}) {
   }
 }
 
-/** Open `bytes` in a new tab; returns the pdf.js document, or undefined if it couldn't be opened. */
-async function addTabNow(name, bytes, { dirty = false } = {}) {
-  const tab = { id: nextId++, name, bytes, dirty };
+/**
+ * Open `bytes` in a new tab; returns the pdf.js document, or undefined if it couldn't be opened.
+ * `path` (desktop app only) is the file on disk that Save writes back to.
+ */
+async function addTabNow(name, bytes, { dirty = false, path = null } = {}) {
+  const tab = { id: nextId++, name, bytes, dirty, path };
   tabs.push(tab);
   return activateNow(tab);
 }
@@ -177,13 +180,30 @@ async function readFiles(fileList) {
   return read.filter((r) => r.status === "fulfilled").map((r) => r.value);
 }
 
-async function openFiles(fileList) {
+/** `paths` (desktop app): file name → where it is on disk, for the PDFs that Save may write back to. */
+async function openFiles(fileList, paths = new Map()) {
   for (const { name, bytes, converted } of await readFiles(fileList)) {
     serial(async () => {
-      const doc = await addTabNow(name, bytes, { dirty: !!converted });
+      const doc = await addTabNow(name, bytes, { dirty: !!converted, path: converted ? null : paths.get(name) });
       if (doc) recentView.remember(name, bytes, doc);
     });
   }
+}
+
+// ---------- desktop app (Electron; window.quireDesktop comes from electron/preload.cjs) ----------
+const desktop = window.quireDesktop;
+
+/** Files from the desktop app ({name, path, bytes}) opened like picked files, remembering their paths. */
+function openDesktopFiles(files) {
+  if (!files.length) return;
+  openFiles(files.map((f) => new File([f.bytes], f.name)), new Map(files.map((f) => [f.name, f.path])));
+}
+
+const chooseFiles = () => (desktop ? desktop.open().then(openDesktopFiles) : openInput.click());
+
+if (desktop) {
+  desktop.initialFiles().then(openDesktopFiles); // a double-clicked PDF that started Quire
+  desktop.onOpenFiles(openDesktopFiles); // ones double-clicked while it's open
 }
 
 // ---------- recent files ----------
@@ -206,7 +226,10 @@ const recentView = createRecentView({
 const saveActive = () => serial(async () => {
   if (!active) return;
   const bytes = await viewer.currentBytes(active.bytes);
-  if (!(await saveBytes(bytes, active.name))) return;
+  // the desktop app writes straight back to the file it opened; otherwise ask where
+  const saved = desktop && active.path ? await desktop.save(active.path, bytes) : await saveBytes(bytes, active.name);
+  if (!saved) return;
+  if (saved.path) { active.path = saved.path; active.name = saved.name; }
   active.bytes = bytes;
   active.dirty = false;
   viewer.markSaved();
@@ -219,8 +242,9 @@ const PDF_FILE = { description: "PDF document", type: "application/pdf", extensi
 const WORD_FILE = { description: "Word document", extension: ".docx",
   type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
 
-// shortcut: browser save = download or Chromium's file picker; the Tauri shell will write files directly.
+/** Ask where to save and write the file: true, or (desktop app) {path, name}; false/null if cancelled. */
 async function saveBytes(bytes, name, file = PDF_FILE) {
+  if (desktop) return desktop.saveAs(name, bytes, file.extension);
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
@@ -626,7 +650,7 @@ const openInput = $("#open-input");
 const combineInput = $("#combine-input");
 openInput.onchange = () => { openFiles(openInput.files); openInput.value = ""; };
 combineInput.onchange = () => { combineWith(combineInput.files); combineInput.value = ""; };
-for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => openInput.click();
+for (const b of document.querySelectorAll("[data-open]")) b.onclick = chooseFiles;
 $("#combine").onclick = () => combineInput.click();
 const compareInput = $("#compare-input");
 compareInput.onchange = async () => {
@@ -693,7 +717,7 @@ document.addEventListener("keydown", (e) => {
     stepHistory(key === "z" && !e.shiftKey);
     return;
   }
-  if (mod && e.key === "o") { e.preventDefault(); openInput.click(); }
+  if (mod && e.key === "o") { e.preventDefault(); chooseFiles(); }
   else if (mod && e.key === "s") { e.preventDefault(); saveActive(); }
   else if (mod && e.key === "p") { e.preventDefault(); printActive(); }
   else if (mod && e.key === "f") { e.preventDefault(); searchInput.focus(); searchInput.select(); }
