@@ -208,7 +208,8 @@ button, input { font: inherit; color: inherit; }
 /* ---------- empty state ---------- */
 .welcome { display: none; }
 #app.empty .welcome {
-  display: grid; place-items: center; align-content: center; gap: 40px;
+  /* safe: when it's taller than the screen, start at the top instead of spilling above where it can't be scrolled to */
+  display: grid; place-items: center; align-content: safe center; gap: 40px;
   position: absolute; inset: 0; background: var(--bg); padding: 32px 16px; overflow-y: auto;
 }
 
@@ -492,18 +493,22 @@ button, input { font: inherit; color: inherit; }
 /* top app bar: document switcher, undo/redo, Save, ⋮ */
 .android .topbar { gap: 4px; padding: 6px 8px; }
 .android .tabs, .android .theme-button, .android .split { display: none !important; }
-.android #app:not(.empty) .brand { display: none; }
-.android .doc-switch {
-  flex: 1; min-width: 0; justify-content: flex-start; border-color: transparent; background: none;
-  font-size: 16px; padding: 8px 6px;
-}
-.android .doc-switch b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.android .doc-count:not(:empty) {
-  flex-shrink: 0; min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 12px; line-height: 20px;
-  background: var(--accent-soft); color: var(--text);
+/* documents: an icon with the number open; the names are in its menu. margin-right pushes undo…⋮ to the right */
+.android .topbar .doc-switch.phone-only:not([hidden]) { display: inline-flex !important; } /* not phone-only's "revert" (block) */
+.android #app.empty:not(.home) .doc-switch.phone-only { display: none !important; }
+.android .doc-switch { position: relative; margin-right: auto; border-color: transparent; background: none; }
+.android .topbar .doc-switch > .doc-count:not(:empty) { /* (beats the top bar's hidden-label rule for spans) */
+  position: absolute; top: 2px; right: 0; width: auto; height: auto; overflow: visible; clip: auto;
+  min-width: 16px; padding: 0 4px; border-radius: 8px;
+  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+  background: var(--accent); color: var(--accent-ink);
 }
 .android #app.empty .topbar { justify-content: space-between; }
-.android .topbar .btn { padding: 9px; }
+.android #app.home .doc-switch { display: inline-flex !important; } /* on the start screen, the way back to open documents */
+.android .topbar #home { border-color: transparent; background: none; }
+.android .topbar .btn { width: 40px; height: 40px; padding: 0; justify-content: center; align-items: center; flex-shrink: 0; }
+.android #app:not(.empty) .brand { display: none; } /* the logo only on the start screen */
+.android .topbar .more-button .i { width: 22px; height: 22px; } /* its thin squares look small at the 18px the others use */
 .android .topbar .btn > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .android .topbar #undo, .android .topbar #redo, .android .topbar .more-button { border-color: transparent; background: none; }
 .android #app.empty #undo, .android #app.empty #redo { display: none; }
@@ -553,6 +558,7 @@ button, input { font: inherit; color: inherit; }
 }
 .android .page-pill input::-webkit-inner-spin-button, .android .page-pill input::-webkit-outer-spin-button { appearance: none; margin: 0; }
 .android .viewer { touch-action: pan-x pan-y; }
+.android #app.empty .page-pill, .android #app.empty .toolbar { display: none; }
 
 /* pages as a drawer from the left (⋮ → Pages) */
 .android .pages-panel {

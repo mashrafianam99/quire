@@ -36,6 +36,8 @@
     <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></symbol>
     <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></symbol>
     <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.6M8.2 13.2l7.6 4.6"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 9.5V20h4.5v-6h3v6H18V9.5"/></symbol>
+    <symbol id="i-docs" viewBox="0 0 24 24"><path transform="translate(.5 0)" d="M8 3h7l4 4v11a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM15 3v4h4M4 7v13a1 1 0 0 0 1 1h10"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
     <symbol id="i-up" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
@@ -50,8 +52,9 @@
   <header class="topbar">
     <div class="brand"><span class="brand-mark"></span>Quire</div>
     <nav id="tabs" class="tabs" role="tablist" aria-label="Open documents"></nav>
+    <button id="home" class="btn icon doc-only" aria-label="Start screen" title="Back to the start screen (documents stay open)"><svg class="i"><use href="#i-home"/></svg></button>
     <!-- Android: the open documents live in this menu instead of a tab strip -->
-    <button class="btn doc-switch phone-only doc-only" popovertarget="docs-menu" aria-haspopup="menu" title="Open documents"><b></b><span class="doc-count"></span><svg class="i"><use href="#i-chevron"/></svg></button>
+    <button class="btn doc-switch phone-only doc-only" popovertarget="docs-menu" aria-haspopup="menu" title="Open documents" aria-label="Open documents"><svg class="i"><use href="#i-docs"/></svg><span class="doc-count"></span></button>
     <div id="docs-menu" class="more-menu docs-menu" popover aria-label="Open documents"><p class="menu-heading">Open documents</p></div>
     <button class="btn icon theme-button" popovertarget="theme-menu" aria-haspopup="menu" aria-label="Theme" title="Theme: light, dark, warm or greyscale"><svg class="i"><use href="#i-theme"/></svg></button>
     <div id="theme-menu" class="more-menu theme-menu" popover role="menu" aria-label="Theme">

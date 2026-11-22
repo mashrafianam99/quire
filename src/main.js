@@ -83,14 +83,16 @@ function renderTabs() {
       <button class="tab-close" aria-label="Close">×</button>`;
     el.querySelector(".tab-name").textContent = (tab.dirty ? "● " : "") + tab.name;
     el.querySelector(".tab-name").title = tab.name;
-    el.querySelector(".tab-name").onclick = () => serial(() => activateNow(tab));
+    el.querySelector(".tab-name").onclick = () => serial(() => showTab(tab));
     el.querySelector(".tab-close").onclick = () => serial(() => closeTabNow(tab));
     return el;
   }));
-  app.classList.toggle("empty", tabs.length === 0);
-  // the phone shows the open document's name in its top bar (the tab strip lives in a menu there)
-  $(".doc-switch b").textContent = active ? (active.dirty ? "● " : "") + active.name : "";
-  $(".doc-count").textContent = tabs.length > 1 ? String(tabs.length) : "";
+  // home: the start screen shown over open documents (Home button); they stay open underneath
+  const home = atHome && tabs.length > 0;
+  app.classList.toggle("empty", tabs.length === 0 || home);
+  app.classList.toggle("home", home);
+  // the phone's documents button shows how many are open; their names are in its menu
+  $(".doc-count").textContent = tabs.length ? String(tabs.length) : "";
 }
 
 /** Keep annotations/form input when leaving a tab. */
@@ -100,7 +102,18 @@ async function stashActive() {
   active.bytes = await viewer.currentBytes(active.bytes);
 }
 
+let atHome = false;
+function goHome() { atHome = true; renderTabs(); }
+
+/** Show an open tab; the one already loaded behind the start screen comes back as it was, without reopening. */
+async function showTab(tab) {
+  if (tab !== active) return activateNow(tab);
+  atHome = false;
+  renderTabs();
+}
+
 async function activateNow(tab, { keepView = false } = {}) {
+  atHome = false;
   redactor.stop(); // marks and open edits belong to the document being replaced
   textEditor.stop();
   if (active !== tab) formDesigner.stop(); // the designer stays on while its own changes reopen the file
@@ -259,7 +272,7 @@ const recentView = createRecentView({
   menu: $("#recent-menu"),
   onOpen: (entry) => serial(async () => {
     const open = tabs.find((t) => t.name === entry.name);
-    if (open) { if (open !== active) await activateNow(open); return; }
+    if (open) { await showTab(open); return; }
     const bytes = await recent.load(entry.id);
     if (!bytes) { toast(`“${entry.name}” is no longer kept on this device.`); return; }
     const doc = await addTabNow(entry.name, bytes);
@@ -722,7 +735,7 @@ for (const menu of document.querySelectorAll(".more-menu")) { // the Tools and T
       ?? $(".more-button");
     const r = button.getBoundingClientRect();
     menu.style.top = `${r.bottom + 6}px`;
-    if (menu.classList.contains("docs-menu")) menu.style.left = `${Math.max(8, r.left)}px`; // under the title
+    if (menu.classList.contains("docs-menu")) menu.style.left = "8px"; // the phone's documents list: from the left edge
     else menu.style.right = `${Math.max(8, innerWidth - r.right)}px`;
   });
   menu.addEventListener("click", (e) => { if (e.target.closest(".menu-item")) menu.hidePopover(); });
@@ -745,6 +758,7 @@ imageInput.onchange = () => {
   if (file) serial(() => viewer.addImage(file));
 };
 $("#undo").onclick = () => stepHistory(true);
+$("#home").onclick = goHome;
 $("#redo").onclick = () => stepHistory(false);
 $("#zoom-in").onclick = () => viewer.zoomIn();
 $("#zoom-out").onclick = () => viewer.zoomOut();
